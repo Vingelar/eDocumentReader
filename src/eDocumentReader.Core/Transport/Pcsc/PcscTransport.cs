@@ -67,7 +67,7 @@ public sealed class PcscTransport : ICardTransport
         ObjectDisposedException.ThrowIf(card == 0, this);
         var output = new byte[4096];
         var code = Native.SCardControl(card, controlCode, input, (uint)input.Length, output, (uint)output.Length, out var returned);
-        if (code is 1 or 0x32) throw new NotSupportedException($"SCardControl 0x{controlCode:X8} wird vom Leser nicht unterstützt.");
+        if (code is 1 or 0x32) throw new NotSupportedException(T($"SCardControl 0x{controlCode:X8} wird vom Leser nicht unterstützt.", $"SCardControl 0x{controlCode:X8} is not supported by the reader."));
         PcscException.Check(code, $"SCardControl 0x{controlCode:X8}");
         return output[..(int)returned];
     }

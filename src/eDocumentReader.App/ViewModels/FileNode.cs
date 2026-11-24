@@ -21,7 +21,7 @@ public sealed class FileNode
 
     public string HexDump => Data.Length <= MaxHexBytes
         ? Hex.Dump(Data)
-        : Hex.Dump(Data.AsSpan(0, MaxHexBytes)) + $"{Environment.NewLine}… {Data.Length - MaxHexBytes} weitere Bytes";
+        : Hex.Dump(Data.AsSpan(0, MaxHexBytes)) + T($"{Environment.NewLine}… {Data.Length - MaxHexBytes} weitere Bytes", $"{Environment.NewLine}… {Data.Length - MaxHexBytes} more bytes");
 
     /// <param name="tagNames">Tag dictionary of the application the file belongs to (default: ICAO LDS).</param>
     public static FileNode FromFile(EmrtdFile file, Func<uint, string?>? tagNames = null)
@@ -64,8 +64,8 @@ public sealed class FileNode
         var children = tlv.Children.Select(c => FromTlv(c, tagNames)).ToList();
         var name = tagNames(tlv.Tag);
         var sb = new StringBuilder();
-        sb.AppendLine($"Tag {tlv.TagHex}{(name != null ? $" ({name})" : "")}, {tlv.Class}, {(tlv.IsConstructed ? "konstruiert" : "primitiv")}");
-        sb.AppendLine($"Offset {tlv.Offset}, Header {tlv.HeaderLength} B, Wert {tlv.Value.Length} B");
+        sb.AppendLine(T($"Tag {tlv.TagHex}{(name != null ? $" ({name})" : "")}, {tlv.Class}, {(tlv.IsConstructed ? "konstruiert" : "primitiv")}", $"Tag {tlv.TagHex}{(name != null ? $" ({name})" : "")}, {tlv.Class}, {(tlv.IsConstructed ? "constructed" : "primitive")}"));
+        sb.AppendLine(T($"Offset {tlv.Offset}, Header {tlv.HeaderLength} B, Wert {tlv.Value.Length} B", $"Offset {tlv.Offset}, header {tlv.HeaderLength} B, value {tlv.Value.Length} B"));
         if (!tlv.IsConstructed && tlv.Value.Length is > 0 and <= 512 && tlv.Value.All(b => b is >= 0x20 and < 0x7F))
             sb.AppendLine($"Text: \"{Encoding.ASCII.GetString(tlv.Value)}\"");
         foreach (var f in tlv.Findings) sb.AppendLine("⚠ " + f);

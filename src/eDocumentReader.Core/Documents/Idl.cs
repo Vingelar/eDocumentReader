@@ -5,7 +5,11 @@ using eDocumentReader.Core.Util;
 namespace eDocumentReader.Core.Documents;
 
 /// <summary>One displayed element of an IDL data group.</summary>
-public sealed record IdlField(string Path, string TagHex, string Name, string Value, List<string> Findings);
+public sealed record IdlField(string Path, string TagHex, string Name, string Value, List<string> Findings)
+{
+    /// <summary>Language-independent identity of the DG1 fields (e.g. "familyName"); the name is display text.</summary>
+    public string? Key { get; init; }
+}
 
 /// <summary>Driving privilege (category) entry, tag '87' inside '7F63'.</summary>
 public sealed record IdlCategory(string Category, string IssueDate, string ExpiryDate, string Codes, string Sign, string Value, List<string> Findings);
@@ -39,44 +43,44 @@ public static class Idl
 
     public static string DataGroupContent(int dg) => dg switch
     {
-        1 => "Pflichtdaten: Inhaber, Ausstellung, Fahrerlaubnisklassen",
-        2 => "Zusätzliche Inhaberdaten",
-        4 => "Lichtbild",
-        5 => "Unterschrift / Zeichen",
-        13 => "Active Authentication (öffentlicher Schlüssel)",
-        14 => "Sicherheitsinformationen (CA/TA/PACE)",
+        1 => T("Pflichtdaten: Inhaber, Ausstellung, Fahrerlaubnisklassen", "Mandatory data: holder, issuance, driving privileges"),
+        2 => T("Zusätzliche Inhaberdaten", "Additional holder data"),
+        4 => T("Lichtbild", "Portrait"),
+        5 => T("Unterschrift / Zeichen", "Signature / usual mark"),
+        13 => T("Active Authentication (öffentlicher Schlüssel)", "Active Authentication (public key)"),
+        14 => T("Sicherheitsinformationen (CA/TA/PACE)", "Security information (CA/TA/PACE)"),
         _ => $"DG{dg}",
     };
 
     public static string? TagName(uint tag) => tag switch
     {
         0x60 => "EF.COM",
-        0x61 => "DG1 – Pflichtdaten",
-        0x6B => "DG2 – Zusätzliche Inhaberdaten",
-        0x65 => "DG4 – Lichtbild",
-        0x67 => "DG5 – Unterschrift",
-        0x6F => "DG13 – AA-Schlüssel",
-        0x6E => "DG14 – Sicherheitsinformationen",
+        0x61 => T("DG1 – Pflichtdaten", "DG1 – mandatory data"),
+        0x6B => T("DG2 – Zusätzliche Inhaberdaten", "DG2 – additional holder data"),
+        0x65 => T("DG4 – Lichtbild", "DG4 – portrait"),
+        0x67 => T("DG5 – Unterschrift", "DG5 – signature"),
+        0x6F => T("DG13 – AA-Schlüssel", "DG13 – AA key"),
+        0x6E => T("DG14 – Sicherheitsinformationen", "DG14 – security information"),
         0x77 => "EF.SOD",
-        0x5F01 => "LDS-Version",
-        0x5C => "Tag-Liste",
-        0x5F1F => "Demografische Daten",
-        0x7F63 => "Fahrerlaubnisklassen",
-        0x02 => "Anzahl",
-        0x87 => "Fahrerlaubnisklasse",
-        0x5F35 => "Geschlecht",
-        0x5F64 => "Größe",
-        0x5F65 => "Gewicht",
-        0x5F66 => "Augenfarbe",
-        0x5F67 => "Haarfarbe",
-        0x5F11 => "Geburtsort",
-        0x5F42 => "Wohnort / Anschrift",
-        0xA2 => "Bildinstanz",
-        0x88 => "Aufnahmezeitpunkt",
-        0x89 => "Bildtyp",
-        0x5F40 => "Bilddaten (Lichtbild)",
-        0x5F43 => "Bilddaten (Unterschrift)",
-        0x53 => "Freie Daten (ISO/IEC 7816-6 'discretionary data')",
+        0x5F01 => T("LDS-Version", "LDS version"),
+        0x5C => T("Tag-Liste", "Tag list"),
+        0x5F1F => T("Demografische Daten", "Demographic data"),
+        0x7F63 => T("Fahrerlaubnisklassen", "Driving privileges"),
+        0x02 => T("Anzahl", "Number of entries"),
+        0x87 => T("Fahrerlaubnisklasse", "Driving privilege"),
+        0x5F35 => T("Geschlecht", "Sex"),
+        0x5F64 => T("Größe", "Height"),
+        0x5F65 => T("Gewicht", "Weight"),
+        0x5F66 => T("Augenfarbe", "Eye colour"),
+        0x5F67 => T("Haarfarbe", "Hair colour"),
+        0x5F11 => T("Geburtsort", "Place of birth"),
+        0x5F42 => T("Wohnort / Anschrift", "Residence / address"),
+        0xA2 => T("Bildinstanz", "Image instance"),
+        0x88 => T("Aufnahmezeitpunkt", "Capture time"),
+        0x89 => T("Bildtyp", "Image type"),
+        0x5F40 => T("Bilddaten (Lichtbild)", "Image data (portrait)"),
+        0x5F43 => T("Bilddaten (Unterschrift)", "Image data (signature)"),
+        0x53 => T("Freie Daten (ISO/IEC 7816-6 'discretionary data')", "Discretionary data (ISO/IEC 7816-6)"),
         _ => null,
     };
 
@@ -93,13 +97,13 @@ public static class Idl
             try { outer = BerTlv.ParseSingle(dataGroups[dg]); }
             catch (Exception ex)
             {
-                r.Fields.Add(new IdlField(path, "", DataGroupContent(dg), Preview(dataGroups[dg]), [$"Kein gültiges BER-TLV: {ex.Message}"]));
+                r.Fields.Add(new IdlField(path, "", DataGroupContent(dg), Preview(dataGroups[dg]), [T($"Kein gültiges BER-TLV: {ex.Message}", $"Not a valid BER-TLV: {ex.Message}")]));
                 continue;
             }
             var expectedTag = dg switch { 1 => 0x61u, 2 => 0x6Bu, 4 => 0x65u, 5 => 0x67u, _ => 0u };
             List<string> outerFindings = expectedTag != 0 && outer.Tag != expectedTag
-                ? [$"Äußeres Tag '{outer.TagHex}', erwartet '{expectedTag:X2}' (ISO/IEC 18013-3 Tabelle 12)"] : [];
-            r.Fields.Add(new IdlField(path, outer.TagHex, DataGroupContent(dg), $"{dataGroups[dg].Length} Byte", outerFindings));
+                ? [T($"Äußeres Tag '{outer.TagHex}', erwartet '{expectedTag:X2}' (ISO/IEC 18013-3 Tabelle 12)", $"Outer tag '{outer.TagHex}', expected '{expectedTag:X2}' (ISO/IEC 18013-3 Table 12)")] : [];
+            r.Fields.Add(new IdlField(path, outer.TagHex, DataGroupContent(dg), T($"{dataGroups[dg].Length} Byte", $"{dataGroups[dg].Length} bytes"), outerFindings));
             foreach (var child in outer.Children) Walk(child, outer, path, dg, r);
         }
         return r;
@@ -108,7 +112,7 @@ public static class Idl
     private static void Walk(BerTlv node, BerTlv parent, string path, int dg, IdlReadout r)
     {
         var name = TagName(node.Tag) ?? $"Tag '{node.TagHex}'";
-        List<string> unknown = TagName(node.Tag) == null ? ["Tag in ISO/IEC 18013-2 Anhang C nicht bekannt"] : [];
+        List<string> unknown = TagName(node.Tag) == null ? [T("Tag in ISO/IEC 18013-2 Anhang C nicht bekannt", "Tag not known in ISO/IEC 18013-2 Annex C")] : [];
         switch (node.Tag)
         {
             case 0x5F1F:
@@ -125,14 +129,14 @@ public static class Idl
                 var format = ImageFormat(node.Value);
                 var captured = parent.Find(0x88) is { } t ? (Bcd(t.Value) is { } digits ? FormatTimestamp(digits) : Hex.Of(t.Value)) : null;
                 var type = parent.Find(0x89) is { } ty ? Hex.Of(ty.Value) : null;
-                r.Images.Add(new IdlImage(dg, node.Tag == 0x5F40 ? "Lichtbild" : "Unterschrift", node.Value, format, captured, type));
-                r.Fields.Add(new IdlField(path, node.TagHex, name, $"{format}, {node.Value.Length} Byte",
-                    format == "unbekannt" ? ["Bildformat nicht erkannt (erwartet JPEG oder JPEG 2000)"] : []));
+                r.Images.Add(new IdlImage(dg, node.Tag == 0x5F40 ? T("Lichtbild", "Portrait") : T("Unterschrift", "Signature"), node.Value, format, captured, type));
+                r.Fields.Add(new IdlField(path, node.TagHex, name, T($"{format}, {node.Value.Length} Byte", $"{format}, {node.Value.Length} bytes"),
+                    !IsKnownImageFormat(format) ? [T("Bildformat nicht erkannt (erwartet JPEG oder JPEG 2000)", "Image format not recognized (expected JPEG or JPEG 2000)")] : []));
                 return;
             }
             case 0x88:
                 r.Fields.Add(new IdlField(path, node.TagHex, name, Bcd(node.Value) is { } ts ? FormatTimestamp(ts) : Hex.Of(node.Value),
-                    Bcd(node.Value) == null ? ["Keine BCD-Ziffern"] : []));
+                    Bcd(node.Value) == null ? [T("Keine BCD-Ziffern", "No BCD digits")] : []));
                 return;
             case 0x89:
                 r.Fields.Add(new IdlField(path, node.TagHex, name, Hex.Of(node.Value), []));
@@ -145,17 +149,17 @@ public static class Idl
                 var digits = Bcd(node.Value);
                 var unit = node.Tag == 0x5F64 ? "cm" : "kg";
                 r.Fields.Add(new IdlField(path, node.TagHex, name, digits != null ? $"{int.Parse(digits)} {unit}" : Hex.Of(node.Value),
-                    digits == null ? ["Keine BCD-Ziffern"] : []));
+                    digits == null ? [T("Keine BCD-Ziffern", "No BCD digits")] : []));
                 return;
             }
             case 0x53:
                 r.Fields.Add(new IdlField(path, node.TagHex, name, Text(node.Value),
-                    ["Freitext statt der Struktur nach ISO/IEC 18013-2 Anhang C (Platzhalter?)"]));
+                    [T("Freitext statt der Struktur nach ISO/IEC 18013-2 Anhang C (Platzhalter?)", "Free text instead of the ISO/IEC 18013-2 Annex C structure (placeholder?)")]));
                 return;
         }
         if (node.IsConstructed)
         {
-            r.Fields.Add(new IdlField(path, node.TagHex, name, $"{node.Children.Count} Element(e)", unknown));
+            r.Fields.Add(new IdlField(path, node.TagHex, name, T($"{node.Children.Count} Element(e)", $"{node.Children.Count} element(s)"), unknown));
             foreach (var c in node.Children) Walk(c, node, $"{path}/{node.TagHex}", dg, r);
             return;
         }
@@ -205,21 +209,21 @@ public static class Idl
         if (number == null)
         {
             // Not the Annex C layout: show the content generically instead of guessing.
-            r.Fields.Add(new IdlField(p, "5F1F", "Demografische Daten", Text(v),
-                ["Aufbau entspricht nicht ISO/IEC 18013-2 Anhang C (Längenpräfixe / BCD-Daten); Rohinhalt angezeigt"]));
+            r.Fields.Add(new IdlField(p, "5F1F", T("Demografische Daten", "Demographic data"), Text(v),
+                [T("Aufbau entspricht nicht ISO/IEC 18013-2 Anhang C (Längenpräfixe / BCD-Daten); Rohinhalt angezeigt", "Structure does not match ISO/IEC 18013-2 Annex C (length prefixes / BCD dates); raw content shown")]));
             return;
         }
-        if (pos != v.Length) findings.Add($"{v.Length - pos} Byte nach der Führerscheinnummer nicht ausgewertet");
-        r.Fields.Add(new IdlField(p, "5F1F", "Familienname", family!, []));
-        r.Fields.Add(new IdlField(p, "5F1F", "Vornamen", given!, []));
-        r.Fields.Add(new IdlField(p, "5F1F", "Geburtsdatum", FormatDate(dob), DateFindings(dob)));
-        r.Fields.Add(new IdlField(p, "5F1F", "Ausstellungsdatum", FormatDate(doi), DateFindings(doi)));
+        if (pos != v.Length) findings.Add(T($"{v.Length - pos} Byte nach der Führerscheinnummer nicht ausgewertet", $"{v.Length - pos} bytes after the licence number not evaluated"));
+        r.Fields.Add(new IdlField(p, "5F1F", T("Familienname", "Family name"), family!, []) { Key = "familyName" });
+        r.Fields.Add(new IdlField(p, "5F1F", T("Vornamen", "Given names"), given!, []) { Key = "givenNames" });
+        r.Fields.Add(new IdlField(p, "5F1F", T("Geburtsdatum", "Date of birth"), FormatDate(dob), DateFindings(dob)) { Key = "dateOfBirth" });
+        r.Fields.Add(new IdlField(p, "5F1F", T("Ausstellungsdatum", "Date of issue"), FormatDate(doi), DateFindings(doi)) { Key = "dateOfIssue" });
         var expiryFindings = DateFindings(doe);
-        if (doi != null && doe != null && string.CompareOrdinal(doi, doe) >= 0) expiryFindings.Add("Ablaufdatum liegt nicht nach dem Ausstellungsdatum");
-        r.Fields.Add(new IdlField(p, "5F1F", "Ablaufdatum", FormatDate(doe), expiryFindings));
-        r.Fields.Add(new IdlField(p, "5F1F", "Ausstellerstaat", country!, country!.All(char.IsAsciiLetterUpper) ? [] : ["Kein Ländercode aus 3 Großbuchstaben (ISO 3166-1 alpha-3)"]));
-        r.Fields.Add(new IdlField(p, "5F1F", "Ausstellende Behörde", authority!, []));
-        r.Fields.Add(new IdlField(p, "5F1F", "Führerscheinnummer", number, findings));
+        if (doi != null && doe != null && string.CompareOrdinal(doi, doe) >= 0) expiryFindings.Add(T("Ablaufdatum liegt nicht nach dem Ausstellungsdatum", "Date of expiry is not after the date of issue"));
+        r.Fields.Add(new IdlField(p, "5F1F", T("Ablaufdatum", "Date of expiry"), FormatDate(doe), expiryFindings) { Key = "dateOfExpiry" });
+        r.Fields.Add(new IdlField(p, "5F1F", T("Ausstellerstaat", "Issuing country"), country!, country!.All(char.IsAsciiLetterUpper) ? [] : [T("Kein Ländercode aus 3 Großbuchstaben (ISO 3166-1 alpha-3)", "Not a country code of 3 capital letters (ISO 3166-1 alpha-3)")]) { Key = "issuingCountry" });
+        r.Fields.Add(new IdlField(p, "5F1F", T("Ausstellende Behörde", "Issuing authority"), authority!, []) { Key = "issuingAuthority" });
+        r.Fields.Add(new IdlField(p, "5F1F", T("Führerscheinnummer", "Licence number"), number, findings) { Key = "licenceNumber" });
     }
 
     /// <summary>Category entry: category;date of issue (BCD);date of expiry (BCD);codes ('+'-separated);sign;value.</summary>
@@ -232,23 +236,23 @@ public static class Idl
         {
             if (i >= parts.Count || parts[i].Length == 0) return "";
             var d = Bcd(parts[i]);
-            if (d == null || d.Length != 8) { findings.Add($"Datum {Hex.Of(parts[i])} ist kein 4-Byte-BCD-Datum"); return Hex.Of(parts[i]); }
+            if (d == null || d.Length != 8) { findings.Add(T($"Datum {Hex.Of(parts[i])} ist kein 4-Byte-BCD-Datum", $"Date {Hex.Of(parts[i])} is not a 4-byte BCD date")); return Hex.Of(parts[i]); }
             return d;
         }
-        if (parts.Count < 3) findings.Add("Weniger als 3 durch ';' getrennte Felder");
+        if (parts.Count < 3) findings.Add(T("Weniger als 3 durch ';' getrennte Felder", "Fewer than 3 fields separated by ';'"));
         var category = Part(0);
-        if (category.Length is 0 or > 3) findings.Add($"Klasse '{category}' muss 1–3 Zeichen haben");
+        if (category.Length is 0 or > 3) findings.Add(T($"Klasse '{category}' muss 1–3 Zeichen haben", $"Category '{category}' must have 1–3 characters"));
         var doi = DatePart(1);
         var doe = DatePart(2);
-        if (doi.Length == 8 && doe.Length == 8 && string.CompareOrdinal(doi, doe) >= 0) findings.Add("Ablaufdatum liegt nicht nach dem Ausstellungsdatum");
+        if (doi.Length == 8 && doe.Length == 8 && string.CompareOrdinal(doi, doe) >= 0) findings.Add(T("Ablaufdatum liegt nicht nach dem Ausstellungsdatum", "Date of expiry is not after the date of issue"));
         return new IdlCategory(category, doi, doe, Part(3), Part(4), Part(5), findings);
     }
 
     public static string Describe(this IdlCategory c)
     {
         var sb = new StringBuilder(c.Category);
-        if (c.IssueDate.Length > 0) sb.Append($", erteilt {FormatDate(c.IssueDate)}");
-        if (c.ExpiryDate.Length > 0) sb.Append($", gültig bis {FormatDate(c.ExpiryDate)}");
+        if (c.IssueDate.Length > 0) sb.Append(T($", erteilt {FormatDate(c.IssueDate)}", $", issued {FormatDate(c.IssueDate)}"));
+        if (c.ExpiryDate.Length > 0) sb.Append(T($", gültig bis {FormatDate(c.ExpiryDate)}", $", valid until {FormatDate(c.ExpiryDate)}"));
         if (c.Codes.Length > 0) sb.Append($", Codes {c.Codes}");
         if (c.Sign.Length > 0 || c.Value.Length > 0) sb.Append($" {c.Sign}{c.Value}");
         return sb.ToString();
@@ -258,7 +262,9 @@ public static class Idl
         d.Length >= 3 && d[0] == 0xFF && d[1] == 0xD8 ? "JPEG"
         : d.Length >= 12 && d[4] == 0x6A && d[5] == 0x50 && d[6] == 0x20 && d[7] == 0x20 ? "JPEG 2000 (JP2)"
         : d.Length >= 4 && d[0] == 0xFF && d[1] == 0x4F && d[2] == 0xFF && d[3] == 0x51 ? "JPEG 2000 (Codestream)"
-        : "unbekannt";
+        : T("unbekannt", "unknown");
+
+    public static bool IsKnownImageFormat(string format) => format.StartsWith("JPEG", StringComparison.Ordinal);
 
     private static List<byte[]> Split(byte[] v, byte separator)
     {
@@ -294,17 +300,17 @@ public static class Idl
 
     private static List<string> DateFindings(string? d)
     {
-        if (d == null) return ["Kein BCD-Datum"];
-        if (!DateOnly.TryParseExact(d, "yyyyMMdd", out _)) return [$"Ungültiges Datum {d}"];
+        if (d == null) return [T("Kein BCD-Datum", "No BCD date")];
+        if (!DateOnly.TryParseExact(d, "yyyyMMdd", out _)) return [T($"Ungültiges Datum {d}", $"Invalid date {d}")];
         return [];
     }
 
     private static string Sex(byte[] v) => v.Length == 1
-        ? v[0] switch { 0 => "0 – unbekannt", 1 => "1 – männlich", 2 => "2 – weiblich", 9 => "9 – nicht anwendbar", _ => Hex.Of(v) } + " (ISO/IEC 5218)"
+        ? v[0] switch { 0 => T("0 – unbekannt", "0 – not known"), 1 => T("1 – männlich", "1 – male"), 2 => T("2 – weiblich", "2 – female"), 9 => T("9 – nicht anwendbar", "9 – not applicable"), _ => Hex.Of(v) } + " (ISO/IEC 5218)"
         : Text(v);
 
     private static string Text(byte[] v) =>
         v.Length > 0 && v.All(b => b >= 0x20 && b != 0x7F) ? Encoding.UTF8.GetString(v) : Preview(v);
 
-    private static string Preview(byte[] v) => v.Length <= 48 ? Hex.Of(v) : Hex.Of(v.AsSpan(0, 48)) + $" … ({v.Length} Byte)";
+    private static string Preview(byte[] v) => v.Length <= 48 ? Hex.Of(v) : Hex.Of(v.AsSpan(0, 48)) + T($" … ({v.Length} Byte)", $" … ({v.Length} bytes)");
 }

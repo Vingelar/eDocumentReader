@@ -36,10 +36,10 @@ public sealed record CvPublicKey(string Oid, IReadOnlyDictionary<uint, byte[]> E
         if (IsRsa) return new RsaKeyParameters(false, new BigInteger(1, Elements[0x81]), new BigInteger(1, Elements[0x82]));
         if (IsEc)
         {
-            var domain = EcDomain() ?? inheritedDomain ?? throw new InvalidOperationException("EC-Domain-Parameter fehlen (vom CVCA-Zertifikat erben).");
+            var domain = EcDomain() ?? inheritedDomain ?? throw new InvalidOperationException(T("EC-Domain-Parameter fehlen (vom CVCA-Zertifikat erben).", "EC domain parameters missing (inherit from the CVCA certificate)."));
             return new ECPublicKeyParameters(domain.Curve.DecodePoint(Elements[0x86]), domain);
         }
-        throw new NotSupportedException($"Schlüsselalgorithmus {Oid}");
+        throw new NotSupportedException(T($"Schlüsselalgorithmus {Oid}", $"Key algorithm {Oid}"));
     }
 }
 
@@ -64,37 +64,37 @@ public sealed class CvCertificate
     {
         Encoded = encoded;
         var cert = BerTlv.ParseSingle(encoded);
-        if (cert.Tag != 0x7F21) throw new FormatException($"Kein CV-Zertifikat (Tag {cert.TagHex} statt 7F21).");
-        var body = cert.Find(0x7F4E) ?? throw new FormatException("Certificate Body (7F4E) fehlt.");
+        if (cert.Tag != 0x7F21) throw new FormatException(T($"Kein CV-Zertifikat (Tag {cert.TagHex} statt 7F21).", $"Not a CV certificate (tag {cert.TagHex} instead of 7F21)."));
+        var body = cert.Find(0x7F4E) ?? throw new FormatException(T("Certificate Body (7F4E) fehlt.", "Certificate Body (7F4E) missing."));
         Body = body.Encode();
-        Signature = cert.Find(0x5F37)?.Value ?? throw new FormatException("Signatur (5F37) fehlt.");
+        Signature = cert.Find(0x5F37)?.Value ?? throw new FormatException(T("Signatur (5F37) fehlt.", "Signature (5F37) missing."));
 
         uint[] order = [0x5F29, 0x42, 0x7F49, 0x5F20, 0x7F4C, 0x5F25, 0x5F24];
         var actual = body.Children.Select(c => c.Tag).Where(t => t != 0x65).ToArray();
-        if (!actual.SequenceEqual(order)) Findings.Add($"Reihenfolge/Vollständigkeit der Body-Elemente abweichend von TR-03110-3 Table 23: {string.Join(" ", actual.Select(t => t.ToString("X")))}");
+        if (!actual.SequenceEqual(order)) Findings.Add(T($"Reihenfolge/Vollständigkeit der Body-Elemente abweichend von TR-03110-3 Table 23: {string.Join(" ", actual.Select(t => t.ToString("X")))}", $"Order/completeness of the body elements differs from TR-03110-3 Table 23: {string.Join(" ", actual.Select(t => t.ToString("X")))}"));
 
         ProfileIdentifier = body.Find(0x5F29)?.Value is { Length: 1 } pid ? pid[0] : -1;
         if (ProfileIdentifier != 0) Findings.Add($"Certificate Profile Identifier {ProfileIdentifier} ≠ 0 (TR-03110-3 C.1.1).");
         Car = Encoding.Latin1.GetString(body.Find(0x42)?.Value ?? []);
         Chr = Encoding.Latin1.GetString(body.Find(0x5F20)?.Value ?? []);
-        var pk = body.Find(0x7F49) ?? throw new FormatException("Public Key (7F49) fehlt.");
-        var oid = DerObjectIdentifier.FromContents(pk.Find(0x06)?.Value ?? throw new FormatException("Public-Key-OID fehlt.")).Id;
+        var pk = body.Find(0x7F49) ?? throw new FormatException(T("Public Key (7F49) fehlt.", "Public Key (7F49) missing."));
+        var oid = DerObjectIdentifier.FromContents(pk.Find(0x06)?.Value ?? throw new FormatException(T("Public-Key-OID fehlt.", "Public key OID missing."))).Id;
         PublicKey = new CvPublicKey(oid, pk.Children.Where(c => c.Tag != 0x06).ToDictionary(c => c.Tag, c => c.Value));
-        var chat = body.Find(0x7F4C) ?? throw new FormatException("CHAT (7F4C) fehlt.");
+        var chat = body.Find(0x7F4C) ?? throw new FormatException(T("CHAT (7F4C) fehlt.", "CHAT (7F4C) missing."));
         ChatOid = DerObjectIdentifier.FromContents(chat.Find(0x06)?.Value ?? []).Id;
         ChatTemplate = chat.Find(0x53)?.Value ?? [];
         EffectiveDate = ParseDate(body.Find(0x5F25)?.Value, "Effective Date");
         ExpirationDate = ParseDate(body.Find(0x5F24)?.Value, "Expiration Date");
         Extensions = body.Find(0x65)?.Value;
-        if (ExpirationDate < EffectiveDate) Findings.Add("Ablaufdatum liegt vor dem Gültigkeitsbeginn.");
+        if (ExpirationDate < EffectiveDate) Findings.Add(T("Ablaufdatum liegt vor dem Gültigkeitsbeginn.", "Expiration date lies before the effective date."));
     }
 
     private DateOnly ParseDate(byte[]? v, string name)
     {
         // TR-03110-3 D.2: 6 digits YYMMDD, each digit encoded as unpacked BCD in one byte.
-        if (v is not { Length: 6 } || v.Any(b => b > 9)) { Findings.Add($"{name} nicht als 6 entpackte BCD-Ziffern kodiert."); return DateOnly.MinValue; }
+        if (v is not { Length: 6 } || v.Any(b => b > 9)) { Findings.Add(T($"{name} nicht als 6 entpackte BCD-Ziffern kodiert.", $"{name} not encoded as 6 unpacked BCD digits.")); return DateOnly.MinValue; }
         try { return new DateOnly(2000 + v[0] * 10 + v[1], v[2] * 10 + v[3], v[4] * 10 + v[5]); }
-        catch { Findings.Add($"{name} ist kein gültiges Datum."); return DateOnly.MinValue; }
+        catch { Findings.Add(T($"{name} ist kein gültiges Datum.", $"{name} is not a valid date.")); return DateOnly.MinValue; }
     }
 
     public CvRole Role => ChatTemplate.Length > 0 ? (CvRole)(ChatTemplate[0] >> 6) : CvRole.InspectionSystemOrTerminal;
@@ -113,13 +113,13 @@ public sealed class CvCertificate
     public string DescribeAuthorization()
     {
         if (ChatTemplate.Length == 0) return "-";
-        var role = Role switch { CvRole.Cvca => "CVCA", CvRole.DvDomestic => "DV (offiziell national)", CvRole.DvForeign => "DV (nicht-offiziell/ausländisch)", _ => ChatOid == TaOids.IdIs ? "Inspection System" : "Terminal" };
-        if (ChatOid != TaOids.IdIs) return $"{role}, Rechte {Hex.Compact(ChatTemplate)}";
+        var role = Role switch { CvRole.Cvca => "CVCA", CvRole.DvDomestic => T("DV (offiziell national)", "DV (official domestic)"), CvRole.DvForeign => T("DV (nicht-offiziell/ausländisch)", "DV (non-official/foreign)"), _ => ChatOid == TaOids.IdIs ? "Inspection System" : "Terminal" };
+        if (ChatOid != TaOids.IdIs) return T($"{role}, Rechte {Hex.Compact(ChatTemplate)}", $"{role}, rights {Hex.Compact(ChatTemplate)}");
         var rights = new List<string>();
         // TR-03110-4 C.1 (Inspection Systems): bit 1 = read DG4 (iris), bit 0 = read DG3 (fingerprint)
-        if ((ChatTemplate[^1] & 0x01) != 0) rights.Add("DG3 (Fingerabdruck)");
-        if ((ChatTemplate[^1] & 0x02) != 0) rights.Add("DG4 (Iris)");
-        return $"{role}, Lesen: {(rights.Count == 0 ? "keine" : string.Join(", ", rights))}";
+        if ((ChatTemplate[^1] & 0x01) != 0) rights.Add(T("DG3 (Fingerabdruck)", "DG3 (fingerprint)"));
+        if ((ChatTemplate[^1] & 0x02) != 0) rights.Add(T("DG4 (Iris)", "DG4 (iris)"));
+        return T($"{role}, Lesen: {(rights.Count == 0 ? "keine" : string.Join(", ", rights))}", $"{role}, read: {(rights.Count == 0 ? "none" : string.Join(", ", rights))}");
     }
 
     public bool AllowsDataGroup(int dg) => dg switch { 3 => (ChatTemplate[^1] & 0x01) != 0, 4 => (ChatTemplate[^1] & 0x02) != 0, _ => false };
@@ -135,7 +135,7 @@ public sealed class CvCertificate
     }
 
     public string Describe() =>
-        $"CHR {Chr}  CAR {Car}  {TerminalType}  {DescribeAuthorization()}  gültig {EffectiveDate:yyyy-MM-dd}–{ExpirationDate:yyyy-MM-dd}  Schlüssel {TaOids.Name(PublicKey.Oid)}";
+        T($"CHR {Chr}  CAR {Car}  {TerminalType}  {DescribeAuthorization()}  gültig {EffectiveDate:yyyy-MM-dd}–{ExpirationDate:yyyy-MM-dd}  Schlüssel {TaOids.Name(PublicKey.Oid)}", $"CHR {Chr}  CAR {Car}  {TerminalType}  {DescribeAuthorization()}  valid {EffectiveDate:yyyy-MM-dd}–{ExpirationDate:yyyy-MM-dd}  key {TaOids.Name(PublicKey.Oid)}");
 
     public override string ToString() => $"CVC {Chr} (CAR {Car})";
 }
@@ -164,7 +164,7 @@ public static class TaOids
         Ecdsa + ".3" => "SHA256withPLAIN-ECDSA",
         Ecdsa + ".4" => "SHA384withPLAIN-ECDSA",
         Ecdsa + ".5" => "SHA512withPLAIN-ECDSA",
-        _ => throw new NotSupportedException($"TA-Algorithmus {oid}"),
+        _ => throw new NotSupportedException(T($"TA-Algorithmus {oid}", $"TA algorithm {oid}")),
     };
 
     public static string Name(string oid) => oid switch

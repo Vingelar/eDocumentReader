@@ -22,7 +22,7 @@ public sealed class CommandApdu
     public CommandApdu(byte cla, byte ins, byte p1, byte p2, byte[]? data = null, int ne = 0, bool forceExtended = false)
     {
         Data = data ?? [];
-        if (Data.Length > 65535) throw new ArgumentOutOfRangeException(nameof(data), "Nc > 65535 nicht kodierbar.");
+        if (Data.Length > 65535) throw new ArgumentOutOfRangeException(nameof(data), T("Nc > 65535 nicht kodierbar.", "Nc > 65535 cannot be encoded."));
         if (ne is < 0 or > 65536) throw new ArgumentOutOfRangeException(nameof(ne));
         Cla = cla; Ins = ins; P1 = p1; P2 = p2; Ne = ne; ForceExtended = forceExtended;
     }
@@ -68,7 +68,7 @@ public sealed class CommandApdu
     /// <summary>Decodes a command APDU byte string (all seven cases of 7816-4 5.1).</summary>
     public static CommandApdu Parse(ReadOnlySpan<byte> apdu)
     {
-        if (apdu.Length < 4) throw new FormatException("APDU kürzer als 4 Bytes.");
+        if (apdu.Length < 4) throw new FormatException(T("APDU kürzer als 4 Bytes.", "APDU shorter than 4 bytes."));
         byte cla = apdu[0], ins = apdu[1], p1 = apdu[2], p2 = apdu[3];
         var body = apdu[4..];
         if (body.Length == 0) return new CommandApdu(cla, ins, p1, p2);
@@ -78,7 +78,7 @@ public sealed class CommandApdu
             var nc = body[0];
             if (body.Length == 1 + nc) return new CommandApdu(cla, ins, p1, p2, body.Slice(1, nc).ToArray());
             if (body.Length == 2 + nc) return new CommandApdu(cla, ins, p1, p2, body.Slice(1, nc).ToArray(), body[1 + nc] == 0 ? 256 : body[1 + nc]);
-            throw new FormatException("Kurzes APDU: Länge passt nicht zu Lc.");
+            throw new FormatException(T("Kurzes APDU: Länge passt nicht zu Lc.", "Short APDU: length does not match Lc."));
         }
         if (body.Length == 3)
         {
@@ -86,14 +86,14 @@ public sealed class CommandApdu
             return new CommandApdu(cla, ins, p1, p2, null, le == 0 ? 65536 : le, true);
         }
         var ncExt = (body[1] << 8) | body[2];
-        if (ncExt == 0) throw new FormatException("Erweitertes Lc = 0000 ist ungültig.");
+        if (ncExt == 0) throw new FormatException(T("Erweitertes Lc = 0000 ist ungültig.", "Extended Lc = 0000 is invalid."));
         if (body.Length == 3 + ncExt) return new CommandApdu(cla, ins, p1, p2, body.Slice(3, ncExt).ToArray(), 0, true);
         if (body.Length == 5 + ncExt)
         {
             var le = (body[3 + ncExt] << 8) | body[4 + ncExt];
             return new CommandApdu(cla, ins, p1, p2, body.Slice(3, ncExt).ToArray(), le == 0 ? 65536 : le, true);
         }
-        throw new FormatException("Erweitertes APDU: Länge passt nicht zu Lc.");
+        throw new FormatException(T("Erweitertes APDU: Länge passt nicht zu Lc.", "Extended APDU: length does not match Lc."));
     }
 
     public CommandApdu WithNe(int ne) => new(Cla, Ins, P1, P2, Data, ne, ForceExtended);

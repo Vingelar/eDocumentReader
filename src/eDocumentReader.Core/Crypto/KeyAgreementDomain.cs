@@ -28,7 +28,7 @@ public abstract class KeyAgreementDomain
     public static KeyAgreementDomain FromParameters(Asn1Encodable? parameters, bool ec)
     {
         if (parameters is DerInteger id) return Standardized(id.IntValueExact);
-        if (parameters == null) throw new NotSupportedException("Domain-Parameter fehlen.");
+        if (parameters == null) throw new NotSupportedException(T("Domain-Parameter fehlen.", "Domain parameters missing."));
         var seq = Asn1Sequence.GetInstance(parameters);
         if (ec) return new EcDomain(X9ECParameters.GetInstance(seq));
         // DH: DomainParameters ::= SEQUENCE { p, g, q, j OPTIONAL, ... } (ANSI X9.42) or PKCS#3 DHParameter (p, g, l)
@@ -46,7 +46,7 @@ public abstract class KeyAgreementDomain
     {
         var raw = value.ToByteArrayUnsigned();
         if (raw.Length == length) return raw;
-        if (raw.Length > length) throw new CryptographicException("Wert länger als Feldgröße.");
+        if (raw.Length > length) throw new CryptographicException(T("Wert länger als Feldgröße.", "Value longer than the field size."));
         var r = new byte[length];
         raw.CopyTo(r, length - raw.Length);
         return r;
@@ -79,7 +79,7 @@ public sealed class EcDomain(X9ECParameters parameters) : KeyAgreementDomain
     public ECPoint Decode(byte[] encoded)
     {
         var p = Parameters.Curve.DecodePoint(encoded).Normalize();
-        if (p.IsInfinity || !p.IsValid()) throw new CryptographicException("Öffentlicher Schlüssel liegt nicht auf der Kurve.");
+        if (p.IsInfinity || !p.IsValid()) throw new CryptographicException(T("Öffentlicher Schlüssel liegt nicht auf der Kurve.", "Public key is not on the curve."));
         return p;
     }
 
@@ -88,7 +88,7 @@ public sealed class EcDomain(X9ECParameters parameters) : KeyAgreementDomain
     public override byte[] Agree(BigInteger privateKey, byte[] peerPublicKey)
     {
         var s = Decode(peerPublicKey).Multiply(privateKey).Normalize();
-        if (s.IsInfinity) throw new CryptographicException("Gemeinsames Geheimnis ist der Punkt im Unendlichen.");
+        if (s.IsInfinity) throw new CryptographicException(T("Gemeinsames Geheimnis ist der Punkt im Unendlichen.", "Shared secret is the point at infinity."));
         return FixedLength(s.AffineXCoord.ToBigInteger(), FieldLength);
     }
 
@@ -115,9 +115,9 @@ public sealed class DhDomain(BigInteger p, BigInteger g, BigInteger? q) : KeyAgr
     {
         var y = new BigInteger(1, publicKey);
         if (y.CompareTo(BigInteger.One) <= 0 || y.CompareTo(P.Subtract(BigInteger.One)) >= 0)
-            throw new CryptographicException("DH-Schlüssel außerhalb ]1, p-1[.");
+            throw new CryptographicException(T("DH-Schlüssel außerhalb ]1, p-1[.", "DH key outside ]1, p-1[."));
         if (Q != null && !y.ModPow(Q, P).Equals(BigInteger.One))
-            throw new CryptographicException("DH-Schlüssel liegt nicht in der Untergruppe der Ordnung q.");
+            throw new CryptographicException(T("DH-Schlüssel liegt nicht in der Untergruppe der Ordnung q.", "DH key is not in the subgroup of order q."));
     }
 
     public override byte[] Agree(BigInteger privateKey, byte[] peerPublicKey)

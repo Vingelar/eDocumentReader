@@ -13,8 +13,8 @@ public abstract record SecurityInfo(string Oid, Asn1Encodable Raw)
 
 public sealed record PaceInfo(string Oid, int Version, int? ParameterId, Asn1Encodable Raw) : SecurityInfo(Oid, Raw)
 {
-    public PaceAlgorithm Algorithm { get; } = PaceAlgorithm.FromOid(Oid) ?? throw new NotSupportedException($"Unbekannte PACE-OID {Oid}");
-    public override string Description => $"PACEInfo {Oids.Name(Oid)}, Version {Version}, Domain-Parameter {(ParameterId is { } p ? $"{p} ({StandardizedDomainParameters.Name(p)})" : "explizit")}";
+    public PaceAlgorithm Algorithm { get; } = PaceAlgorithm.FromOid(Oid) ?? throw new NotSupportedException(T($"Unbekannte PACE-OID {Oid}", $"Unknown PACE OID {Oid}"));
+    public override string Description => T($"PACEInfo {Oids.Name(Oid)}, Version {Version}, Domain-Parameter {(ParameterId is { } p ? $"{p} ({StandardizedDomainParameters.Name(p)})" : "explizit")}", $"PACEInfo {Oids.Name(Oid)}, version {Version}, domain parameters {(ParameterId is { } q ? $"{q} ({StandardizedDomainParameters.Name(q)})" : "explicit")}");
 }
 
 public sealed record PaceDomainParameterInfo(string Oid, Asn1Encodable DomainParameter, int? ParameterId, Asn1Encodable Raw) : SecurityInfo(Oid, Raw);
@@ -36,7 +36,7 @@ public sealed record TerminalAuthenticationInfo(string Oid, int Version, Asn1Enc
 
 public sealed record ActiveAuthenticationInfo(string Oid, int Version, string SignatureAlgorithm, Asn1Encodable Raw) : SecurityInfo(Oid, Raw)
 {
-    public override string Description => $"ActiveAuthenticationInfo, Signaturalgorithmus {Oids.Name(SignatureAlgorithm)}";
+    public override string Description => T($"ActiveAuthenticationInfo, Signaturalgorithmus {Oids.Name(SignatureAlgorithm)}", $"ActiveAuthenticationInfo, signature algorithm {Oids.Name(SignatureAlgorithm)}");
 }
 
 public sealed record UnknownSecurityInfo(string Oid, Asn1Encodable Raw) : SecurityInfo(Oid, Raw);

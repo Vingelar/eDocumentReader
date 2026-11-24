@@ -4,7 +4,8 @@ namespace eDocumentReader.Core.Documents;
 
 public enum MrzFormat { TD1, TD2, TD3 }
 
-public sealed record MrzField(string Name, string Value, char? CheckDigit, bool? Valid);
+/// <param name="Key">Language-independent identity: documentNumber, dateOfBirth, dateOfExpiry, personalNumber, composite.</param>
+public sealed record MrzField(string Name, string Value, char? CheckDigit, bool? Valid, string Key = "");
 
 /// <summary>
 /// Machine Readable Zone according to ICAO 9303-3 (check digits 4.9), 9303-4 (TD3), 9303-5 (TD1), 9303-6 (TD2).
@@ -47,11 +48,11 @@ public sealed class Mrz
             [{ Length: 30 }, { Length: 30 }, { Length: 30 }] => MrzFormat.TD1,
             [{ Length: 36 }, { Length: 36 }] => MrzFormat.TD2,
             [{ Length: 44 }, { Length: 44 }] => MrzFormat.TD3,
-            _ => throw new FormatException("MRZ muss aus 3×30 (TD1), 2×36 (TD2) oder 2×44 (TD3) Zeichen bestehen."),
+            _ => throw new FormatException(T("MRZ muss aus 3×30 (TD1), 2×36 (TD2) oder 2×44 (TD3) Zeichen bestehen.", "The MRZ must consist of 3×30 (TD1), 2×36 (TD2) or 2×44 (TD3) characters.")),
         };
         foreach (var l in lines)
             if (l.Any(c => !(c is >= 'A' and <= 'Z' or >= '0' and <= '9' or '<')))
-                throw new FormatException("MRZ enthält Zeichen außerhalb des ICAO-OCR-B-Zeichensatzes (9303-3 4.2).");
+                throw new FormatException(T("MRZ enthält Zeichen außerhalb des ICAO-OCR-B-Zeichensatzes (9303-3 4.2).", "The MRZ contains characters outside the ICAO OCR-B character set (9303-3 4.2)."));
         var mrz = new Mrz(format, lines);
         mrz.Decode();
         return mrz;
@@ -73,7 +74,7 @@ public sealed class Mrz
                 DateOfExpiry = l2[21..27]; DateOfExpiryCheckDigit = l2[27];
                 optional1 = l2[28..42];
                 var personalCd = l2[42];
-                Check("Persönliche Nummer", optional1, personalCd, allowFillerCheckDigit: optional1.All(c => c == '<'));
+                Check("personalNumber", T("Persönliche Nummer", "Personal number"), optional1, personalCd, allowFillerCheckDigit: optional1.All(c => c == '<'));
                 CompositeCheckDigit = l2[43];
                 composite = l2[..10] + l2[13..20] + l2[21..43];
                 OptionalData1 = optional1;
@@ -108,10 +109,10 @@ public sealed class Mrz
                 break;
             }
         }
-        Check("Dokumentnummer", DocumentNumber, DocumentNumberCheckDigit);
-        Check("Geburtsdatum", DateOfBirth, DateOfBirthCheckDigit);
-        Check("Ablaufdatum", DateOfExpiry, DateOfExpiryCheckDigit);
-        Check("Gesamtprüfziffer", composite, CompositeCheckDigit!.Value);
+        Check("documentNumber", T("Dokumentnummer", "Document number"), DocumentNumber, DocumentNumberCheckDigit);
+        Check("dateOfBirth", T("Geburtsdatum", "Date of birth"), DateOfBirth, DateOfBirthCheckDigit);
+        Check("dateOfExpiry", T("Ablaufdatum", "Date of expiry"), DateOfExpiry, DateOfExpiryCheckDigit);
+        Check("composite", T("Gesamtprüfziffer", "Composite check digit"), composite, CompositeCheckDigit!.Value);
     }
 
     private void ResolveLongDocumentNumber(string field, char cd, string optional)
@@ -121,7 +122,7 @@ public sealed class Mrz
             // 9303-5 / 9303-6: number continues in the optional data, terminated by its check digit and a filler.
             var end = optional.IndexOf('<');
             var ext = end < 0 ? optional : optional[..end];
-            if (ext.Length < 2) { Findings.Add("Verlängerte Dokumentnummer: Fortsetzung im optionalen Datenfeld fehlt."); DocumentNumber = field; DocumentNumberCheckDigit = '<'; return; }
+            if (ext.Length < 2) { Findings.Add(T("Verlängerte Dokumentnummer: Fortsetzung im optionalen Datenfeld fehlt.", "Extended document number: continuation in the optional data field missing.")); DocumentNumber = field; DocumentNumberCheckDigit = '<'; return; }
             DocumentNumber = field + ext[..^1];
             DocumentNumberCheckDigit = ext[^1];
             OptionalData1 = end < 0 ? "" : optional[(end + 1)..];
@@ -141,11 +142,11 @@ public sealed class Mrz
         SecondaryIdentifier = idx < 0 ? "" : nameField[(idx + 2)..].Replace('<', ' ').Trim();
     }
 
-    private void Check(string name, string value, char checkDigit, bool allowFillerCheckDigit = false)
+    private void Check(string key, string name, string value, char checkDigit, bool allowFillerCheckDigit = false)
     {
         bool? valid = allowFillerCheckDigit && checkDigit == '<' ? null : ComputeCheckDigit(value) == checkDigit;
-        Fields.Add(new MrzField(name, value, checkDigit, valid));
-        if (valid == false) Findings.Add($"Prüfziffer {name} falsch: '{checkDigit}', erwartet '{ComputeCheckDigit(value)}' (ICAO 9303-3 4.9).");
+        Fields.Add(new MrzField(name, value, checkDigit, valid, key));
+        if (valid == false) Findings.Add(T($"Prüfziffer {name} falsch: '{checkDigit}', erwartet '{ComputeCheckDigit(value)}' (ICAO 9303-3 4.9).", $"Check digit {name} wrong: '{checkDigit}', expected '{ComputeCheckDigit(value)}' (ICAO 9303-3 4.9)."));
     }
 
     /// <summary>ICAO 9303-3 4.9: weights 7-3-1, A..Z = 10..35, '&lt;' = 0, result modulo 10.</summary>
@@ -161,7 +162,7 @@ public sealed class Mrz
                 >= '0' and <= '9' => c - '0',
                 >= 'A' and <= 'Z' => c - 'A' + 10,
                 '<' => 0,
-                _ => throw new FormatException($"Ungültiges MRZ-Zeichen '{c}'."),
+                _ => throw new FormatException(T($"Ungültiges MRZ-Zeichen '{c}'.", $"Invalid MRZ character '{c}'.")),
             };
             sum += v * weights[i % 3];
         }

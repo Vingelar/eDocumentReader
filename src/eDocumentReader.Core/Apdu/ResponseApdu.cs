@@ -15,7 +15,7 @@ public sealed class ResponseApdu
 
     public static ResponseApdu Parse(ReadOnlySpan<byte> raw)
     {
-        if (raw.Length < 2) throw new FormatException("Antwort-APDU kürzer als 2 Bytes (SW1-SW2 fehlt).");
+        if (raw.Length < 2) throw new FormatException(T("Antwort-APDU kürzer als 2 Bytes (SW1-SW2 fehlt).", "Response APDU shorter than 2 bytes (SW1-SW2 missing)."));
         return new ResponseApdu(raw[..^2].ToArray(), new StatusWord(raw[^2], raw[^1]));
     }
 

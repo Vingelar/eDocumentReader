@@ -26,10 +26,10 @@ public static class Hex
         foreach (var c in text)
         {
             if (char.IsWhiteSpace(c) || c is ':' or '-') continue;
-            if (!Uri.IsHexDigit(c)) throw new FormatException($"Ungültiges Hex-Zeichen '{c}'.");
+            if (!Uri.IsHexDigit(c)) throw new FormatException(T($"Ungültiges Hex-Zeichen '{c}'.", $"Invalid hex character '{c}'."));
             digits.Append(c);
         }
-        if (digits.Length % 2 != 0) throw new FormatException("Ungerade Anzahl Hex-Ziffern.");
+        if (digits.Length % 2 != 0) throw new FormatException(T("Ungerade Anzahl Hex-Ziffern.", "Odd number of hex digits."));
         return Convert.FromHexString(digits.ToString());
     }
 

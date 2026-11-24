@@ -35,7 +35,7 @@ public static class StandardizedDomainParameters
             0 => (Rfc5114.G0P, Rfc5114.G0G, Rfc5114.G0Q),
             1 => (Rfc5114.G1P, Rfc5114.G1G, Rfc5114.G1Q),
             2 => (Rfc5114.G2P, Rfc5114.G2G, Rfc5114.G2Q),
-            _ => throw new NotSupportedException($"Domain-Parameter-ID {id} ist RFU."),
+            _ => throw new NotSupportedException(T($"Domain-Parameter-ID {id} ist RFU.", $"Domain parameter ID {id} is RFU.")),
         };
         return new DhDomain(new Org.BouncyCastle.Math.BigInteger(p, 16), new Org.BouncyCastle.Math.BigInteger(g, 16), new Org.BouncyCastle.Math.BigInteger(q, 16));
     }
@@ -55,9 +55,9 @@ public static class StandardizedDomainParameters
             16 => "brainpoolP384r1",
             17 => "brainpoolP512r1",
             18 => "secp521r1",
-            _ => throw new NotSupportedException($"Domain-Parameter-ID {id} ist keine elliptische Kurve oder RFU."),
+            _ => throw new NotSupportedException(T($"Domain-Parameter-ID {id} ist keine elliptische Kurve oder RFU.", $"Domain parameter ID {id} is not an elliptic curve or RFU.")),
         };
         return CustomNamedCurves.GetByName(name) ?? ECNamedCurveTable.GetByName(name)
-            ?? throw new NotSupportedException($"Kurve {name} nicht verfügbar.");
+            ?? throw new NotSupportedException(T($"Kurve {name} nicht verfügbar.", $"Curve {name} not available."));
     }
 }

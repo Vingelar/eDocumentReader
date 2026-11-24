@@ -35,11 +35,11 @@ public static class ActiveAuthentication
         log.Detail(LogCategory.Crypto, "RND.IFD", nonce, Ref);
         var response = channel.Transmit(new CommandApdu(0x00, 0x88, 0x00, 0x00, nonce, 256), "INTERNAL AUTHENTICATE (Active Authentication)");
         if (!response.Status.IsSuccess)
-            throw new ProtocolException($"INTERNAL AUTHENTICATE abgelehnt: {response.Status} {response.Status.Description}", response.Status);
-        log.Detail(LogCategory.Crypto, "Signatur σ", response.Data, Ref);
+            throw new ProtocolException(T($"INTERNAL AUTHENTICATE abgelehnt: {response.Status} {response.Status.Description}", $"INTERNAL AUTHENTICATE rejected: {response.Status} {response.Status.Description}"), response.Status);
+        log.Detail(LogCategory.Crypto, T("Signatur σ", "Signature σ"), response.Data, Ref);
         var result = Verify(publicKey, nonce, response.Data, ecdsaSignatureOid, log);
-        if (result.Valid) log.Info(LogCategory.Protocol, "Active Authentication erfolgreich: " + result.Detail, null, Ref);
-        else log.Error(LogCategory.Protocol, "Active Authentication FEHLGESCHLAGEN: " + result.Detail, null, Ref);
+        if (result.Valid) log.Info(LogCategory.Protocol, T("Active Authentication erfolgreich: ", "Active Authentication successful: ") + result.Detail, null, Ref);
+        else log.Error(LogCategory.Protocol, T("Active Authentication FEHLGESCHLAGEN: ", "Active Authentication FAILED: ") + result.Detail, null, Ref);
         return result;
     }
 
@@ -50,7 +50,7 @@ public static class ActiveAuthentication
         {
             RsaKeyParameters rsa => VerifyRsa(rsa, nonce, signature, log),
             ECPublicKeyParameters ec => VerifyEcdsa(ec, nonce, signature, ecdsaSignatureOid, log),
-            _ => new ActiveAuthenticationResult(false, $"Schlüsseltyp {publicKey.GetType().Name} nicht unterstützt.", nonce, signature),
+            _ => new ActiveAuthenticationResult(false, T($"Schlüsseltyp {publicKey.GetType().Name} nicht unterstützt.", $"Key type {publicKey.GetType().Name} not supported."), nonce, signature),
         };
     }
 
@@ -58,7 +58,7 @@ public static class ActiveAuthentication
     {
         var n = key.Modulus;
         var s = new BigInteger(1, signature);
-        if (s.CompareTo(n) >= 0) return new(false, "Signaturwert ≥ Modulus.", nonce, signature);
+        if (s.CompareTo(n) >= 0) return new(false, T("Signaturwert ≥ Modulus.", "Signature value ≥ modulus."), nonce, signature);
         var j = s.ModPow(key.Exponent, n);
         // ISO/IEC 9796-2: the representative ends with nibble 'C'; otherwise the signer returned min(σ, n-σ) (B.6 / alternative).
         if ((j.IntValue & 0x0F) != 0x0C) j = n.Subtract(j);
@@ -69,7 +69,7 @@ public static class ActiveAuthentication
         while (start < f.Length && f[start] == 0) start++;
         f = f[start..];
         log.Detail(LogCategory.Crypto, "F = σ^e mod n", f, "ISO/IEC 9796-2");
-        if ((f[0] & 0xC0) != 0x40) return new(false, $"Header {f[0]:X2}: Bits 8..7 ≠ 01 (ISO/IEC 9796-2).", nonce, signature);
+        if ((f[0] & 0xC0) != 0x40) return new(false, T($"Header {f[0]:X2}: Bits 8..7 ≠ 01 (ISO/IEC 9796-2).", $"Header {f[0]:X2}: bits 8..7 ≠ 01 (ISO/IEC 9796-2)."), nonce, signature);
         var partialRecovery = (f[0] & 0x20) != 0;
         string hashName;
         int trailerLength;
@@ -78,23 +78,23 @@ public static class ActiveAuthentication
         {
             trailerLength = 2;
             hashName = f[^2] switch { 0x33 => "SHA-1", 0x38 => "SHA-224", 0x34 => "SHA-256", 0x36 => "SHA-384", 0x35 => "SHA-512", _ => "" };
-            if (hashName == "") return new(false, $"Unbekannter Trailer {f[^2]:X2}CC (9303-11 6.1.2.2).", nonce, signature);
+            if (hashName == "") return new(false, T($"Unbekannter Trailer {f[^2]:X2}CC (9303-11 6.1.2.2).", $"Unknown trailer {f[^2]:X2}CC (9303-11 6.1.2.2)."), nonce, signature);
         }
-        else return new(false, $"Ungültiger Trailer {f[^1]:X2}.", nonce, signature);
+        else return new(false, T($"Ungültiger Trailer {f[^1]:X2}.", $"Invalid trailer {f[^1]:X2}."), nonce, signature);
         var digest = DigestUtilities.GetDigest(hashName);
         var hLen = digest.GetDigestSize();
-        if (f.Length < 1 + hLen + trailerLength) return new(false, "Signaturrepräsentant zu kurz.", nonce, signature);
+        if (f.Length < 1 + hLen + trailerLength) return new(false, T("Signaturrepräsentant zu kurz.", "Signature representative too short."), nonce, signature);
         var d = f[^(hLen + trailerLength)..^trailerLength];
         var m1 = f[1..^(hLen + trailerLength)];
         // Header nibble: '6A' = partial recovery (M2 = RND.IFD not contained). Leading '4B…' padding bytes may precede M1 (B.4).
         byte[] mStar = partialRecovery ? [.. m1, .. nonce] : m1;
         var calc = DigestUtilities.CalculateDigest(hashName, mStar);
-        log.Detail(LogCategory.Crypto, "M1 (wiederhergestellt)", m1, Ref);
-        log.Detail(LogCategory.Crypto, $"D (aus Signatur, {hashName})", d, Ref);
+        log.Detail(LogCategory.Crypto, T("M1 (wiederhergestellt)", "M1 (recovered)"), m1, Ref);
+        log.Detail(LogCategory.Crypto, T($"D (aus Signatur, {hashName})", $"D (from signature, {hashName})"), d, Ref);
         log.Detail(LogCategory.Crypto, "D* = H(M1 || RND.IFD)", calc, Ref);
         var ok = calc.AsSpan().SequenceEqual(d);
-        if (!partialRecovery) log.Warning(LogCategory.Protocol, "Header zeigt vollständige Wiederherstellung an – erwartet ist '6A' (partielle Wiederherstellung).", null, Ref);
-        return new(ok, ok ? $"RSA {n.BitLength} Bit, {hashName}, Trailer-Option {trailerLength}" : "Hashwert stimmt nicht überein.", nonce, signature);
+        if (!partialRecovery) log.Warning(LogCategory.Protocol, T("Header zeigt vollständige Wiederherstellung an – erwartet ist '6A' (partielle Wiederherstellung).", "Header indicates full recovery – '6A' (partial recovery) is expected."), null, Ref);
+        return new(ok, ok ? T($"RSA {n.BitLength} Bit, {hashName}, Trailer-Option {trailerLength}", $"RSA {n.BitLength} bit, {hashName}, trailer option {trailerLength}") : T("Hashwert stimmt nicht überein.", "Hash value does not match."), nonce, signature);
     }
 
     private static ActiveAuthenticationResult VerifyEcdsa(ECPublicKeyParameters key, byte[] nonce, byte[] signature, string? signatureOid, Logger log)
@@ -116,13 +116,13 @@ public static class ActiveAuthentication
             null => null,
             _ => null,
         };
-        if (hash == null) return new(false, $"ECDSA-Signaturalgorithmus {(signatureOid ?? "fehlt (ActiveAuthenticationInfo in DG14 erforderlich)")}", nonce, signature);
-        if (hash == "SHA-1") log.Warning(LogCategory.Protocol, "SHA-1 ist für ECDSA-AA nicht zulässig (9303-11 6.1.2.3).", null, Ref);
+        if (hash == null) return new(false, T($"ECDSA-Signaturalgorithmus {(signatureOid ?? "fehlt (ActiveAuthenticationInfo in DG14 erforderlich)")}", $"ECDSA signature algorithm {(signatureOid ?? "missing (ActiveAuthenticationInfo in DG14 required)")}"), nonce, signature);
+        if (hash == "SHA-1") log.Warning(LogCategory.Protocol, T("SHA-1 ist für ECDSA-AA nicht zulässig (9303-11 6.1.2.3).", "SHA-1 is not allowed for ECDSA AA (9303-11 6.1.2.3)."), null, Ref);
         var signer = SignerUtilities.GetSigner(hash.Replace("-", "") + "withPLAIN-ECDSA");
         signer.Init(false, key);
         signer.BlockUpdate(nonce, 0, nonce.Length);
         var ok = signer.VerifySignature(signature);
-        return new(ok, ok ? $"ECDSA {key.Parameters.N.BitLength} Bit, {hash}" : "ECDSA-Signatur ungültig.", nonce, signature);
+        return new(ok, ok ? T($"ECDSA {key.Parameters.N.BitLength} Bit, {hash}", $"ECDSA {key.Parameters.N.BitLength} bit, {hash}") : T("ECDSA-Signatur ungültig.", "ECDSA signature invalid."), nonce, signature);
     }
 
     /// <summary>Card side (simulator / tests): RSA ISO/IEC 9796-2 scheme 1 signature with partial recovery (B.6).</summary>
@@ -145,8 +145,8 @@ public static class ActiveAuthentication
 
     public static string Describe(AsymmetricKeyParameter key) => key switch
     {
-        RsaKeyParameters r => $"RSA {r.Modulus.BitLength} Bit, e={Hex.Compact(r.Exponent.ToByteArrayUnsigned())}",
-        ECPublicKeyParameters e => $"EC {e.Parameters.N.BitLength} Bit",
+        RsaKeyParameters r => T($"RSA {r.Modulus.BitLength} Bit, e={Hex.Compact(r.Exponent.ToByteArrayUnsigned())}", $"RSA {r.Modulus.BitLength} bit, e={Hex.Compact(r.Exponent.ToByteArrayUnsigned())}"),
+        ECPublicKeyParameters e => T($"EC {e.Parameters.N.BitLength} Bit", $"EC {e.Parameters.N.BitLength} bit"),
         _ => key.GetType().Name,
     };
 }

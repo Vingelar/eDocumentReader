@@ -49,11 +49,11 @@ public static class Pace
     {
         var log = channel.Logger;
         var alg = info.Algorithm;
-        log.Info(LogCategory.Protocol, $"PACE: Start mit {info.Description}, Passwort {password.Type}", null, Ref);
+        log.Info(LogCategory.Protocol, T($"PACE: Start mit {info.Description}, Passwort {password.Type}", $"PACE: start with {info.Description}, password {password.Type}"), null, Ref);
         if (alg.KeyAgreement != KeyAgreement.Ecdh || alg.Mapping != PaceMapping.Generic)
-            throw new NotSupportedException($"PACE-Variante {Oids.Name(info.Oid)} ist noch nicht implementiert.");
+            throw new NotSupportedException(T($"PACE-Variante {Oids.Name(info.Oid)} ist noch nicht implementiert.", $"PACE variant {Oids.Name(info.Oid)} is not implemented yet."));
         if (info.ParameterId is not { } paramId || !StandardizedDomainParameters.IsEc(paramId))
-            throw new NotSupportedException("Explizite Domain-Parameter (PACEDomainParameterInfo) sind noch nicht implementiert.");
+            throw new NotSupportedException(T("Explizite Domain-Parameter (PACEDomainParameterInfo) sind noch nicht implementiert.", "Explicit domain parameters (PACEDomainParameterInfo) are not implemented yet."));
         var domain = StandardizedDomainParameters.Curve(paramId);
         var cipher = Kdf.Algorithm(alg.KeyType);
 
@@ -72,15 +72,15 @@ public static class Pace
         var mse = channel.Transmit(new CommandApdu(0x00, 0x22, 0xC1, 0xA4, [.. mseData]), "MSE:Set AT (PACE)");
         if (!mse.Status.IsSuccess)
         {
-            if (mse.Status.Sw1 == 0x63) log.Warning(LogCategory.Protocol, $"MSE:Set AT: Passwort-Fehlbedienungszähler {mse.Status.Sw2 & 0x0F}", null, "TR-03110-3 B.11.1");
-            else throw new ProtocolException($"MSE:Set AT abgelehnt: {mse.Status} {mse.Status.Description}", mse.Status);
+            if (mse.Status.Sw1 == 0x63) log.Warning(LogCategory.Protocol, T($"MSE:Set AT: Passwort-Fehlbedienungszähler {mse.Status.Sw2 & 0x0F}", $"MSE:Set AT: password retry counter {mse.Status.Sw2 & 0x0F}"), null, "TR-03110-3 B.11.1");
+            else throw new ProtocolException(T($"MSE:Set AT abgelehnt: {mse.Status} {mse.Status.Description}", $"MSE:Set AT rejected: {mse.Status} {mse.Status.Description}"), mse.Status);
         }
 
         // Step 1: encrypted nonce
         var r1 = GeneralAuthenticate(channel, [], chained: true, "GENERAL AUTHENTICATE (1: Encrypted Nonce)");
         var z = Expect(r1, 0x80, "Encrypted Nonce");
         var s = SymmetricCrypto.CbcDecrypt(cipher, kPi, new byte[SymmetricCrypto.BlockSize(cipher)], z);
-        log.Detail(LogCategory.Crypto, "z (verschlüsselte Nonce)", z, Ref);
+        log.Detail(LogCategory.Crypto, T("z (verschlüsselte Nonce)", "z (encrypted nonce)"), z, Ref);
         log.Detail(LogCategory.Crypto, "s = D(Kπ, z)", s, Ref);
 
         // Step 2: generic mapping (9303-11 4.4.3.3.1): Ĝ = s·G + H, H = SK_map,PCD · PK_map,IC
@@ -94,7 +94,7 @@ public static class Pace
         var pkMapIc = DecodeAndValidate(domain, pkMapIcBytes, "PK_map,IC");
         log.Detail(LogCategory.Crypto, "PK_map,IC", pkMapIcBytes, Ref);
         var h = pkMapIc.Multiply(skMap).Normalize();
-        if (h.IsInfinity) throw new ProtocolException("PACE: H ist der Punkt im Unendlichen.");
+        if (h.IsInfinity) throw new ProtocolException(T("PACE: H ist der Punkt im Unendlichen.", "PACE: H is the point at infinity."));
         var gMapped = domain.G.Multiply(new BigInteger(1, s)).Add(h).Normalize();
         log.Detail(LogCategory.Crypto, "H = SK_map,PCD · PK_map,IC", h.GetEncoded(false), Ref);
         log.Detail(LogCategory.Crypto, "Ĝ = s·G + H", gMapped, Ref);
@@ -109,7 +109,7 @@ public static class Pace
         var pkEphIc = DecodeAndValidate(domain, pkEphIcBytes, "PK_eph,IC", gMapped.Curve);
         log.Detail(LogCategory.Crypto, "PK_eph,IC", pkEphIcBytes, Ref);
         // 9303-11 4.4.1 / TR-03110-2 3.2: the terminal SHALL check that PK_eph,IC ≠ PK_eph,PCD
-        if (pkEphIc.Equals(pkEph)) throw new ProtocolException("PACE: PK_eph,IC ist identisch mit PK_eph,PCD (Reflexionsangriff).");
+        if (pkEphIc.Equals(pkEph)) throw new ProtocolException(T("PACE: PK_eph,IC ist identisch mit PK_eph,PCD (Reflexionsangriff).", "PACE: PK_eph,IC equals PK_eph,PCD (reflection attack)."));
         var shared = pkEphIc.Multiply(skEph).Normalize();
         var k = FieldBytes(shared.AffineXCoord.ToBigInteger(), domain);
         log.Detail(LogCategory.Crypto, "K = x(SK_eph,PCD · PK_eph,IC)", k, Ref);
@@ -125,14 +125,14 @@ public static class Pace
         var r4 = GeneralAuthenticate(channel, BerTlv.Encode(0x85, tPcd), chained: false, "GENERAL AUTHENTICATE (4: Mutual Authentication)");
         var tIc = Expect(r4, 0x86, "Authentication Token");
         if (!tIc.AsSpan().SequenceEqual(tIcExpected))
-            throw new ProtocolException($"PACE: Authentisierungstoken des Chips ungültig (erhalten {Hex.Compact(tIc)}, erwartet {Hex.Compact(tIcExpected)}).");
-        log.Detail(LogCategory.Crypto, "T_IC korrekt", tIc, Ref);
+            throw new ProtocolException(T($"PACE: Authentisierungstoken des Chips ungültig (erhalten {Hex.Compact(tIc)}, erwartet {Hex.Compact(tIcExpected)}).", $"PACE: authentication token of the chip invalid (received {Hex.Compact(tIc)}, expected {Hex.Compact(tIcExpected)})."));
+        log.Detail(LogCategory.Crypto, T("T_IC korrekt", "T_IC correct"), tIc, Ref);
         var car1 = r4.FirstOrDefault(o => o.Tag == 0x87);
         var car2 = r4.FirstOrDefault(o => o.Tag == 0x88);
-        if (car1 != null) log.Info(LogCategory.Protocol, $"CAR (aktuell): {Encoding.ASCII.GetString(car1.Value)}", null, "TR-03110-3 B.11");
-        if (car2 != null) log.Info(LogCategory.Protocol, $"CAR (vorherig): {Encoding.ASCII.GetString(car2.Value)}", null, "TR-03110-3 B.11");
+        if (car1 != null) log.Info(LogCategory.Protocol, T($"CAR (aktuell): {Encoding.ASCII.GetString(car1.Value)}", $"CAR (current): {Encoding.ASCII.GetString(car1.Value)}"), null, "TR-03110-3 B.11");
+        if (car2 != null) log.Info(LogCategory.Protocol, T($"CAR (vorherig): {Encoding.ASCII.GetString(car2.Value)}", $"CAR (previous): {Encoding.ASCII.GetString(car2.Value)}"), null, "TR-03110-3 B.11");
 
-        log.Info(LogCategory.Protocol, $"PACE erfolgreich – Secure Messaging ({(cipher == CipherAlgorithm.Aes ? "AES" : "3DES")}) aktiv", null, Ref);
+        log.Info(LogCategory.Protocol, T($"PACE erfolgreich – Secure Messaging ({(cipher == CipherAlgorithm.Aes ? "AES" : "3DES")}) aktiv", $"PACE successful – secure messaging ({(cipher == CipherAlgorithm.Aes ? "AES" : "3DES")}) active"), null, Ref);
         var sm = new SecureChannel(channel, alg.KeyType, ksEnc, ksMac, new byte[SymmetricCrypto.BlockSize(cipher)], "PACE");
         return new PaceResult(sm, info, pkEphIcBytes, r4.FirstOrDefault(o => o.Tag == 0x8A)?.Value)
         {
@@ -175,8 +175,8 @@ public static class Pace
     {
         ECPoint p;
         try { p = (curve ?? domain.Curve).DecodePoint(encoded).Normalize(); }
-        catch (Exception ex) { throw new ProtocolException($"PACE: {name} ist kein gültiger Kurvenpunkt: {ex.Message}"); }
-        if (p.IsInfinity || !p.IsValid()) throw new ProtocolException($"PACE: {name} liegt nicht auf der Kurve.");
+        catch (Exception ex) { throw new ProtocolException(T($"PACE: {name} ist kein gültiger Kurvenpunkt: {ex.Message}", $"PACE: {name} is not a valid curve point: {ex.Message}")); }
+        if (p.IsInfinity || !p.IsValid()) throw new ProtocolException(T($"PACE: {name} liegt nicht auf der Kurve.", $"PACE: {name} is not on the curve."));
         return p;
     }
 
@@ -185,12 +185,12 @@ public static class Pace
         var data = BerTlv.Encode(0x7C, content);
         var response = channel.Transmit(new CommandApdu(chained ? (byte)0x10 : (byte)0x00, 0x86, 0x00, 0x00, data, 256), label);
         if (!response.Status.IsSuccess)
-            throw new ProtocolException($"{label} abgelehnt: {response.Status} {response.Status.Description}", response.Status);
+            throw new ProtocolException(T($"{label} abgelehnt: {response.Status} {response.Status.Description}", $"{label} rejected: {response.Status} {response.Status.Description}"), response.Status);
         var dad = BerTlv.ParseSingle(response.Data);
-        if (dad.Tag != 0x7C) throw new ProtocolException($"{label}: Antwort ist kein Dynamic Authentication Data Objekt ('7C').");
+        if (dad.Tag != 0x7C) throw new ProtocolException(T($"{label}: Antwort ist kein Dynamic Authentication Data Objekt ('7C').", $"{label}: response is not a Dynamic Authentication Data object ('7C')."));
         return [.. dad.Children];
     }
 
     private static byte[] Expect(List<BerTlv> objects, uint tag, string name) =>
-        objects.FirstOrDefault(o => o.Tag == tag)?.Value ?? throw new ProtocolException($"PACE: Datenobjekt '{tag:X2}' ({name}) fehlt in der Antwort.");
+        objects.FirstOrDefault(o => o.Tag == tag)?.Value ?? throw new ProtocolException(T($"PACE: Datenobjekt '{tag:X2}' ({name}) fehlt in der Antwort.", $"PACE: data object '{tag:X2}' ({name}) missing in the response."));
 }

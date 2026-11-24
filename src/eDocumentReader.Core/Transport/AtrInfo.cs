@@ -39,9 +39,9 @@ public sealed class AtrInfo
     public AtrInfo(byte[] atr)
     {
         Raw = atr;
-        if (atr.Length < 2) { Findings.Add("ATR kürzer als 2 Bytes."); return; }
+        if (atr.Length < 2) { Findings.Add(T("ATR kürzer als 2 Bytes.", "ATR shorter than 2 bytes.")); return; }
         Ts = atr[0];
-        if (Ts is not (0x3B or 0x3F)) Findings.Add($"TS = {Ts:X2} ungültig (erwartet 3B direkte / 3F inverse Konvention).");
+        if (Ts is not (0x3B or 0x3F)) Findings.Add(T($"TS = {Ts:X2} ungültig (erwartet 3B direkte / 3F inverse Konvention).", $"TS = {Ts:X2} invalid (expected 3B direct / 3F inverse convention)."));
         T0 = atr[1];
         var k = T0 & 0x0F;
         var y = T0 >> 4;
@@ -59,8 +59,8 @@ public sealed class AtrInfo
             if (!Read($"TD{i}", out var td)) break;
             var t = td & 0x0F;
             InterfaceBytes.Add(new($"TD{i}", td, $"Y{i + 1}={td >> 4:X1}h, T={t}"));
-            if (t < lastT) Findings.Add($"TD{i}: Protokolltypen nicht aufsteigend (ISO/IEC 7816-3 8.2.3).");
-            if (i == 1 && t == 15) Findings.Add("T=15 in TD1 ist ungültig (ISO/IEC 7816-3 8.2.3).");
+            if (t < lastT) Findings.Add(T($"TD{i}: Protokolltypen nicht aufsteigend (ISO/IEC 7816-3 8.2.3).", $"TD{i}: protocol types not in ascending order (ISO/IEC 7816-3 8.2.3)."));
+            if (i == 1 && t == 15) Findings.Add(T("T=15 in TD1 ist ungültig (ISO/IEC 7816-3 8.2.3).", "T=15 in TD1 is invalid (ISO/IEC 7816-3 8.2.3)."));
             if (t != 15 && !Protocols.Contains(t)) Protocols.Add(t);
             if (t != 0) tckRequired = true;
             lastT = t;
@@ -69,7 +69,7 @@ public sealed class AtrInfo
         }
         if (Protocols.Count == 0) Protocols.Add(0);
 
-        if (pos + k > atr.Length) { Findings.Add($"ATR zu kurz für {k} historische Bytes."); k = Math.Max(0, atr.Length - pos); }
+        if (pos + k > atr.Length) { Findings.Add(T($"ATR zu kurz für {k} historische Bytes.", $"ATR too short for {k} historical bytes.")); k = Math.Max(0, atr.Length - pos); }
         HistoricalBytes = atr[pos..(pos + k)];
         pos += k;
         if (tckRequired)
@@ -80,13 +80,13 @@ public sealed class AtrInfo
                 byte x = 0;
                 for (var j = 1; j <= pos; j++) x ^= atr[j];
                 TckValid = x == 0;
-                if (!TckValid.Value) Findings.Add($"TCK {Tck:X2} ungültig (XOR T0..TCK ≠ 00, ISO/IEC 7816-3 8.2.5).");
+                if (!TckValid.Value) Findings.Add(T($"TCK {Tck:X2} ungültig (XOR T0..TCK ≠ 00, ISO/IEC 7816-3 8.2.5).", $"TCK {Tck:X2} invalid (XOR T0..TCK ≠ 00, ISO/IEC 7816-3 8.2.5)."));
                 pos++;
             }
-            else Findings.Add("TCK fehlt, obwohl ein Protokoll ≠ T=0 angezeigt wird (ISO/IEC 7816-3 8.2.5).");
+            else Findings.Add(T("TCK fehlt, obwohl ein Protokoll ≠ T=0 angezeigt wird (ISO/IEC 7816-3 8.2.5).", "TCK missing although a protocol ≠ T=0 is indicated (ISO/IEC 7816-3 8.2.5)."));
         }
-        if (pos < atr.Length) Findings.Add($"{atr.Length - pos} überzählige Bytes nach dem ATR.");
-        if (atr.Length > 33) Findings.Add("ATR länger als 33 Bytes (ISO/IEC 7816-3 8.2.1).");
+        if (pos < atr.Length) Findings.Add(T($"{atr.Length - pos} überzählige Bytes nach dem ATR.", $"{atr.Length - pos} surplus bytes after the ATR."));
+        if (atr.Length > 33) Findings.Add(T("ATR länger als 33 Bytes (ISO/IEC 7816-3 8.2.1).", "ATR longer than 33 bytes (ISO/IEC 7816-3 8.2.1)."));
 
         IsPcscContactless = atr.Length >= 5 && Ts == 0x3B && (T0 & 0xF0) == 0x80 && atr[2] == 0x80 && atr[3] == 0x01;
         IsPcscContactlessStorageCard = IsPcscContactless && HistoricalBytes.Length >= 2 && HistoricalBytes[0] == 0x80 && HistoricalBytes[1] == 0x4F;
@@ -95,7 +95,7 @@ public sealed class AtrInfo
 
         bool Read(string name, out byte value)
         {
-            if (pos >= atr.Length) { Findings.Add($"ATR endet vor {name}."); value = 0; return false; }
+            if (pos >= atr.Length) { Findings.Add(T($"ATR endet vor {name}.", $"ATR ends before {name}.")); value = 0; return false; }
             value = atr[pos++];
             return true;
         }
@@ -104,26 +104,26 @@ public sealed class AtrInfo
     private static string DescribeTa(int i, int t, byte b) => (i, t) switch
     {
         (1, _) => $"Fi={FiTable[b >> 4]?.ToString() ?? "RFU"}, f(max)={FmaxTable[b >> 4] ?? "RFU"} MHz, Di={DiTable[b & 0x0F]?.ToString() ?? "RFU"}",
-        (2, _) => $"Specific mode: {((b & 0x80) != 0 ? "nicht" : "")} änderbar, {((b & 0x10) != 0 ? "implizite" : "TA1-")}Parameter, T={b & 0x0F}",
+        (2, _) => T($"Specific mode: {((b & 0x80) != 0 ? "nicht" : "")} änderbar, {((b & 0x10) != 0 ? "implizite" : "TA1-")}Parameter, T={b & 0x0F}", $"Specific mode: {((b & 0x80) != 0 ? "not " : "")}changeable, {((b & 0x10) != 0 ? "implicit" : "TA1")} parameters, T={b & 0x0F}"),
         (_, 1) => $"IFSC = {b}",
-        (_, 15) => $"Clock stop: {(b >> 6) switch { 0 => "nicht unterstützt", 1 => "Zustand L", 2 => "Zustand H", _ => "keine Präferenz" }}, Klassen: {ClassBits(b & 0x3F)}",
-        _ => "spezifisch",
+        (_, 15) => T($"Clock stop: {(b >> 6) switch { 0 => "nicht unterstützt", 1 => "Zustand L", 2 => "Zustand H", _ => "keine Präferenz" }}, Klassen: {ClassBits(b & 0x3F)}", $"Clock stop: {(b >> 6) switch { 0 => "not supported", 1 => "state L", 2 => "state H", _ => "no preference" }}, classes: {ClassBits(b & 0x3F)}"),
+        _ => T("spezifisch", "specific"),
     };
 
     private static string DescribeTb(int i, int t, byte b) => (i, t) switch
     {
-        (1 or 2, _) => "veraltet (ISO/IEC 7816-3 8.3), wird ignoriert",
+        (1 or 2, _) => T("veraltet (ISO/IEC 7816-3 8.3), wird ignoriert", "deprecated (ISO/IEC 7816-3 8.3), ignored"),
         (_, 1) => $"BWI = {b >> 4}, CWI = {b & 0x0F}",
         (_, 15) => $"SPU: {b:X2}",
-        _ => "spezifisch",
+        _ => T("spezifisch", "specific"),
     };
 
     private static string DescribeTc(int i, int t, byte b) => (i, t) switch
     {
         (1, _) => $"Extra Guard Time N = {b}",
         (2, _) => $"WI = {b} (T=0)",
-        (_, 1) => $"Fehlererkennung: {((b & 1) != 0 ? "CRC" : "LRC")}",
-        _ => "spezifisch",
+        (_, 1) => T($"Fehlererkennung: {((b & 1) != 0 ? "CRC" : "LRC")}", $"Error detection: {((b & 1) != 0 ? "CRC" : "LRC")}"),
+        _ => T("spezifisch", "specific"),
     };
 
     private static string ClassBits(int bits)
@@ -141,15 +141,15 @@ public sealed class AtrInfo
         if (h.Length == 0) return;
         if (IsPcscContactless && !IsPcscContactlessStorageCard && h[0] is not (0x00 or 0x80 or 0x10))
         {
-            Findings.Add("Historische Bytes ohne ISO/IEC 7816-4-Kategorieindikator (bei kontaktlosen Karten: ATS-Hist.-Bytes bzw. ATQB-Daten, PC/SC Part 3 Tab. 3-5).");
+            Findings.Add(T("Historische Bytes ohne ISO/IEC 7816-4-Kategorieindikator (bei kontaktlosen Karten: ATS-Hist.-Bytes bzw. ATQB-Daten, PC/SC Part 3 Tab. 3-5).", "Historical bytes without ISO/IEC 7816-4 category indicator (contactless cards: ATS historical bytes or ATQB data, PC/SC Part 3 Table 3-5)."));
             return;
         }
         switch (h[0])
         {
             case 0x00:
-                if (h.Length < 4) { Findings.Add("Kategorie 00: Statusindikator (3 Bytes) fehlt."); return; }
+                if (h.Length < 4) { Findings.Add(T("Kategorie 00: Statusindikator (3 Bytes) fehlt.", "Category 00: status indicator (3 bytes) missing.")); return; }
                 ParseCompact(h.AsSpan(1, h.Length - 4));
-                HistoricalObjects.Add(new CompactTlv(0x00, h[^3..], $"Statusindikator: LCS={h[^3]:X2}, SW={h[^2]:X2}{h[^1]:X2}"));
+                HistoricalObjects.Add(new CompactTlv(0x00, h[^3..], T($"Statusindikator: LCS={h[^3]:X2}, SW={h[^2]:X2}{h[^1]:X2}", $"Status indicator: LCS={h[^3]:X2}, SW={h[^2]:X2}{h[^1]:X2}")));
                 break;
             case 0x80:
                 ParseCompact(h.AsSpan(1));
@@ -158,7 +158,7 @@ public sealed class AtrInfo
                 HistoricalObjects.Add(new CompactTlv(0x10, h[1..], "DIR data reference"));
                 break;
             default:
-                Findings.Add($"Kategorieindikator {h[0]:X2} proprietär.");
+                Findings.Add(T($"Kategorieindikator {h[0]:X2} proprietär.", $"Category indicator {h[0]:X2} proprietary."));
                 break;
         }
     }
@@ -171,7 +171,7 @@ public sealed class AtrInfo
             var header = data[p++];
             var tag = (byte)(header >> 4);
             var len = header & 0x0F;
-            if (p + len > data.Length) { Findings.Add($"COMPACT-TLV {header:X2}: Länge überschreitet historische Bytes."); return; }
+            if (p + len > data.Length) { Findings.Add(T($"COMPACT-TLV {header:X2}: Länge überschreitet historische Bytes.", $"COMPACT-TLV {header:X2}: length exceeds the historical bytes.")); return; }
             var value = data.Slice(p, len).ToArray();
             p += len;
             HistoricalObjects.Add(new CompactTlv(header, value, DescribeCompact(tag, value)));
@@ -182,8 +182,8 @@ public sealed class AtrInfo
     {
         switch (tag)
         {
-            case 0x1: return "Ländercode";
-            case 0x2: return "Kartenherausgeber";
+            case 0x1: return T("Ländercode", "Country code");
+            case 0x2: return T("Kartenherausgeber", "Card issuer");
             case 0x3: return "Card service data";
             case 0x4: return "Initial access data";
             case 0x5: return "Card issuer's data";
@@ -194,12 +194,12 @@ public sealed class AtrInfo
                 {
                     CommandChainingSupported = (v[2] & 0x80) != 0;
                     ExtendedLengthSupported = (v[2] & 0x40) != 0;
-                    sb.Append($": Chaining={(CommandChainingSupported.Value ? "ja" : "nein")}, Extended Lc/Le={(ExtendedLengthSupported.Value ? "ja" : "nein")}");
+                    sb.Append(T($": Chaining={(CommandChainingSupported.Value ? "ja" : "nein")}, Extended Lc/Le={(ExtendedLengthSupported.Value ? "ja" : "nein")}", $": chaining={(CommandChainingSupported.Value ? "yes" : "no")}, extended Lc/Le={(ExtendedLengthSupported.Value ? "yes" : "no")}"));
                 }
                 return sb.ToString();
-            case 0x8: return "Statusindikator";
+            case 0x8: return T("Statusindikator", "Status indicator");
             case 0xF: return "Application identifier";
-            default: return "RFU/unbekannt";
+            default: return T("RFU/unbekannt", "RFU/unknown");
         }
     }
 
@@ -207,14 +207,14 @@ public sealed class AtrInfo
     {
         var sb = new StringBuilder();
         sb.AppendLine($"ATR: {Hex.Of(Raw)}");
-        sb.AppendLine($"TS = {Ts:X2} ({(Ts == 0x3B ? "direkte" : Ts == 0x3F ? "inverse" : "ungültige")} Konvention)");
+        sb.AppendLine(T($"TS = {Ts:X2} ({(Ts == 0x3B ? "direkte" : Ts == 0x3F ? "inverse" : "ungültige")} Konvention)", $"TS = {Ts:X2} ({(Ts == 0x3B ? "direct" : Ts == 0x3F ? "inverse" : "invalid")} convention)"));
         sb.AppendLine($"T0 = {T0:X2} (Y1={T0 >> 4:X1}h, K={T0 & 0xF})");
         foreach (var ib in InterfaceBytes) sb.AppendLine($"{ib.Name} = {ib.Value:X2}  {ib.Meaning}");
-        sb.AppendLine($"Protokolle: {string.Join(", ", Protocols.Select(p => "T=" + p))}");
-        sb.AppendLine($"Historische Bytes: {Hex.Of(HistoricalBytes)}");
+        sb.AppendLine(T($"Protokolle: {string.Join(", ", Protocols.Select(p => "T=" + p))}", $"Protocols: {string.Join(", ", Protocols.Select(p => "T=" + p))}"));
+        sb.AppendLine(T($"Historische Bytes: {Hex.Of(HistoricalBytes)}", $"Historical bytes: {Hex.Of(HistoricalBytes)}"));
         foreach (var o in HistoricalObjects) sb.AppendLine($"  {o.Tag:X2}: {Hex.Of(o.Value)}  {o.Meaning}");
-        if (Tck.HasValue) sb.AppendLine($"TCK = {Tck:X2} ({(TckValid == true ? "gültig" : "UNGÜLTIG")})");
-        if (IsPcscContactless) sb.AppendLine(IsPcscContactlessStorageCard ? "Kontaktlose Speicherkarte (PC/SC Part 3)" : "Kontaktlose ISO/IEC 14443-4-Karte (PC/SC Part 3 ATR-Abbildung)");
+        if (Tck.HasValue) sb.AppendLine(T($"TCK = {Tck:X2} ({(TckValid == true ? "gültig" : "UNGÜLTIG")})", $"TCK = {Tck:X2} ({(TckValid == true ? "valid" : "INVALID")})"));
+        if (IsPcscContactless) sb.AppendLine(IsPcscContactlessStorageCard ? T("Kontaktlose Speicherkarte (PC/SC Part 3)", "Contactless memory card (PC/SC Part 3)") : T("Kontaktlose ISO/IEC 14443-4-Karte (PC/SC Part 3 ATR-Abbildung)", "Contactless ISO/IEC 14443-4 card (PC/SC Part 3 ATR mapping)"));
         foreach (var f in Findings) sb.AppendLine("⚠ " + f);
         return sb.ToString();
     }

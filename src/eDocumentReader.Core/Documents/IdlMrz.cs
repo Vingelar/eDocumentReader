@@ -29,7 +29,7 @@ public sealed record IdlMrz(string Line)
     public static IdlMrz Parse(string text)
     {
         var t = Normalize(text);
-        if (!LooksLikeIdlMrz(t)) throw new FormatException("IDL-MRZ: 30 Zeichen A–Z, 0–9, '<', beginnend mit 'D' erwartet (ISO/IEC 18013).");
+        if (!LooksLikeIdlMrz(t)) throw new FormatException(T("IDL-MRZ: 30 Zeichen A–Z, 0–9, '<', beginnend mit 'D' erwartet (ISO/IEC 18013).", "IDL MRZ: 30 characters A–Z, 0–9, '<', starting with 'D' expected (ISO/IEC 18013)."));
         return new IdlMrz(t);
     }
 

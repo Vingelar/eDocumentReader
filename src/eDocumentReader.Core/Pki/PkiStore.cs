@@ -79,7 +79,7 @@ public sealed class PkiStore
                 PrivateKeys.Add((file, key));
                 var name = FindCertificateForKey(key)?.Chr;
                 if (persist) Save("keys", SafeName(name ?? Path.GetFileNameWithoutExtension(file)) + ".pkcs8", data);
-                results.Add(new ImportResult(file, kind, $"Privater Schlüssel ({key.GetType().Name}){(name != null ? $" passend zu CVC {name}" : " – kein passendes CV-Zertifikat geladen")}"));
+                results.Add(new ImportResult(file, kind, T($"Privater Schlüssel ({key.GetType().Name}){(name != null ? $" passend zu CVC {name}" : " – kein passendes CV-Zertifikat geladen")}", $"Private key ({key.GetType().Name}){(name != null ? $" matching CVC {name}" : " – no matching CV certificate loaded")}")));
                 break;
             }
             case PkiItemKind.MasterList:
@@ -88,7 +88,7 @@ public sealed class PkiStore
                 var verification = VerifyMasterList(data, certs);
                 foreach (var c in certs) AddCsca(c);
                 if (persist) Save("masterlist", Path.GetFileName(file), data);
-                results.Add(new ImportResult(file, kind, $"CSCA Master List{(signer != null ? $" von {signer.SubjectDN}" : "")}: {certs.Count} Zertifikate; {verification}", certs.Count));
+                results.Add(new ImportResult(file, kind, T($"CSCA Master List{(signer != null ? $" von {signer.SubjectDN}" : "")}: {certs.Count} Zertifikate; {verification}", $"CSCA Master List{(signer != null ? $" from {signer.SubjectDN}" : "")}: {certs.Count} certificates; {verification}"), certs.Count));
                 break;
             }
             case PkiItemKind.Crl:
@@ -96,7 +96,7 @@ public sealed class PkiStore
                 var crl = new X509CrlParser().ReadCrl(data);
                 Crls.Add(crl);
                 if (persist) Save("crl", Path.GetFileName(file), data);
-                results.Add(new ImportResult(file, kind, $"CRL von {crl.IssuerDN}, nächste Aktualisierung {crl.NextUpdate:yyyy-MM-dd}"));
+                results.Add(new ImportResult(file, kind, T($"CRL von {crl.IssuerDN}, nächste Aktualisierung {crl.NextUpdate:yyyy-MM-dd}", $"CRL from {crl.IssuerDN}, next update {crl.NextUpdate:yyyy-MM-dd}")));
                 break;
             }
             case PkiItemKind.Csca or PkiItemKind.DocumentSigner:
@@ -109,7 +109,7 @@ public sealed class PkiStore
                 break;
             }
             default:
-                throw new NotSupportedException("Dateityp nicht erkannt (erwartet X.509, CRL, Master List, CVC oder PKCS#8).");
+                throw new NotSupportedException(T("Dateityp nicht erkannt (erwartet X.509, CRL, Master List, CVC oder PKCS#8).", "File type not recognized (expected X.509, CRL, Master List, CVC or PKCS#8)."));
         }
         return results;
     }
@@ -163,7 +163,7 @@ public sealed class PkiStore
     public static List<X509Certificate> ParseMasterList(byte[] data, out X509Certificate? signer)
     {
         var cms = new CmsSignedData(data);
-        if (cms.SignedContentType.Id != "2.23.136.1.1.2") throw new FormatException($"eContentType {cms.SignedContentType.Id} ist keine CSCA Master List.");
+        if (cms.SignedContentType.Id != "2.23.136.1.1.2") throw new FormatException(T($"eContentType {cms.SignedContentType.Id} ist keine CSCA Master List.", $"eContentType {cms.SignedContentType.Id} is not a CSCA Master List."));
         var sd = Org.BouncyCastle.Asn1.Cms.SignedData.GetInstance(cms.ContentInfo.Content);
         var content = Asn1Sequence.GetInstance(Asn1Object.FromByteArray(Asn1OctetString.GetInstance(sd.EncapContentInfo.Content).GetOctets()));
         var list = new List<X509Certificate>();
@@ -181,14 +181,14 @@ public sealed class PkiStore
     {
         var cms = new CmsSignedData(data);
         var si = cms.GetSignerInfos().GetSigners().FirstOrDefault();
-        if (si == null) return "keine SignerInfo";
+        if (si == null) return T("keine SignerInfo", "no SignerInfo");
         var signer = cms.GetCertificates().EnumerateMatches(null).FirstOrDefault(c => si.SignerID.Match(c));
-        if (signer == null) return "Master List Signer-Zertifikat fehlt – Signatur nicht prüfbar";
-        if (!si.Verify(signer)) return "CMS-Signatur UNGÜLTIG";
+        if (signer == null) return T("Master List Signer-Zertifikat fehlt – Signatur nicht prüfbar", "Master List signer certificate missing – signature cannot be verified");
+        if (!si.Verify(signer)) return T("CMS-Signatur UNGÜLTIG", "CMS signature INVALID");
         var issuer = listCertificates.Concat(Cscas).FirstOrDefault(c => c.SubjectDN.Equivalent(signer.IssuerDN) && Verifies(signer, c));
         return issuer == null
-            ? "CMS-Signatur gültig, Signer-Zertifikat aber keiner CSCA zuordenbar"
-            : $"CMS-Signatur gültig, Signer-Zertifikat von CSCA „{issuer.SubjectDN}“ (Serial {issuer.SerialNumber:X}) ausgestellt{(signer.IsValid(DateTime.UtcNow) ? "" : ", Signer-Zertifikat ABGELAUFEN")}";
+            ? T("CMS-Signatur gültig, Signer-Zertifikat aber keiner CSCA zuordenbar", "CMS signature valid, but the signer certificate matches no CSCA")
+            : T($"CMS-Signatur gültig, Signer-Zertifikat von CSCA „{issuer.SubjectDN}“ (Serial {issuer.SerialNumber:X}) ausgestellt{(signer.IsValid(DateTime.UtcNow) ? "" : ", Signer-Zertifikat ABGELAUFEN")}", $"CMS signature valid, signer certificate issued by CSCA \"{issuer.SubjectDN}\" (serial {issuer.SerialNumber:X}){(signer.IsValid(DateTime.UtcNow) ? "" : ", signer certificate EXPIRED")}");
 
         static bool Verifies(X509Certificate cert, X509Certificate issuer)
         {
@@ -215,7 +215,7 @@ public sealed class PkiStore
         }
         if (candidates.Count == 0)
         {
-            steps.Add($"Kein CSCA-Zertifikat für Aussteller „{ds.IssuerDN}“{(aki != null ? $" (AKI {Hex.Compact(aki)})" : "")} im PKI-Speicher.");
+            steps.Add(T($"Kein CSCA-Zertifikat für Aussteller „{ds.IssuerDN}“{(aki != null ? $" (AKI {Hex.Compact(aki)})" : "")} im PKI-Speicher.", $"No CSCA certificate for issuer \"{ds.IssuerDN}\"{(aki != null ? $" (AKI {Hex.Compact(aki)})" : "")} in the PKI store."));
             return new ChainResult(false, null, steps);
         }
         foreach (var csca in candidates)
@@ -226,13 +226,13 @@ public sealed class PkiStore
             }
             catch (Exception ex)
             {
-                steps.Add($"Signaturprüfung mit CSCA „{csca.SubjectDN}“ (Serial {csca.SerialNumber:X}) fehlgeschlagen: {ex.Message}");
+                steps.Add(T($"Signaturprüfung mit CSCA „{csca.SubjectDN}“ (Serial {csca.SerialNumber:X}) fehlgeschlagen: {ex.Message}", $"Signature check with CSCA \"{csca.SubjectDN}\" (serial {csca.SerialNumber:X}) failed: {ex.Message}"));
                 continue;
             }
-            steps.Add($"DS-Signatur mit CSCA „{csca.SubjectDN}“ (Serial {csca.SerialNumber:X}) gültig.");
+            steps.Add(T($"DS-Signatur mit CSCA „{csca.SubjectDN}“ (Serial {csca.SerialNumber:X}) gültig.", $"DS signature with CSCA \"{csca.SubjectDN}\" (serial {csca.SerialNumber:X}) valid."));
             var valid = true;
-            if (!csca.IsValid(time)) { steps.Add($"CSCA zum Prüfzeitpunkt nicht gültig ({csca.NotBefore:yyyy-MM-dd} – {csca.NotAfter:yyyy-MM-dd})."); valid = false; }
-            if (!ds.IsValid(time)) { steps.Add($"DS-Zertifikat zum Prüfzeitpunkt nicht gültig ({ds.NotBefore:yyyy-MM-dd} – {ds.NotAfter:yyyy-MM-dd})."); valid = false; }
+            if (!csca.IsValid(time)) { steps.Add(T($"CSCA zum Prüfzeitpunkt nicht gültig ({csca.NotBefore:yyyy-MM-dd} – {csca.NotAfter:yyyy-MM-dd}).", $"CSCA not valid at the time of verification ({csca.NotBefore:yyyy-MM-dd} – {csca.NotAfter:yyyy-MM-dd}).")); valid = false; }
+            if (!ds.IsValid(time)) { steps.Add(T($"DS-Zertifikat zum Prüfzeitpunkt nicht gültig ({ds.NotBefore:yyyy-MM-dd} – {ds.NotAfter:yyyy-MM-dd}).", $"DS certificate not valid at the time of verification ({ds.NotBefore:yyyy-MM-dd} – {ds.NotAfter:yyyy-MM-dd}).")); valid = false; }
             foreach (var crl in Crls.Where(c => c.IssuerDN.Equivalent(csca.SubjectDN)))
             {
                 // ICAO 9303-12: the CRL is issued by the CSCA (same DN) – typically signed with its current key,
@@ -241,12 +241,12 @@ public sealed class PkiStore
                 {
                     try { crl.Verify(c.GetPublicKey()); return true; } catch { return false; }
                 });
-                if (crlSigner == null) { steps.Add($"CRL von {crl.IssuerDN} vom {crl.ThisUpdate:yyyy-MM-dd}: Signatur mit keinem CSCA-Schlüssel verifizierbar – ignoriert."); continue; }
-                steps.Add($"CRL vom {crl.ThisUpdate:yyyy-MM-dd} (signiert von CSCA Serial {crlSigner.SerialNumber:X}) gültig{(crl.NextUpdate is { } nu && nu < time ? ", aber ABGELAUFEN" : "")}.");
-                if (crl.IsRevoked(ds)) { steps.Add("DS-Zertifikat ist laut CRL GESPERRT."); valid = false; }
-                else steps.Add("DS-Zertifikat ist nicht gesperrt.");
+                if (crlSigner == null) { steps.Add(T($"CRL von {crl.IssuerDN} vom {crl.ThisUpdate:yyyy-MM-dd}: Signatur mit keinem CSCA-Schlüssel verifizierbar – ignoriert.", $"CRL from {crl.IssuerDN} of {crl.ThisUpdate:yyyy-MM-dd}: signature verifiable with no CSCA key – ignored.")); continue; }
+                steps.Add(T($"CRL vom {crl.ThisUpdate:yyyy-MM-dd} (signiert von CSCA Serial {crlSigner.SerialNumber:X}) gültig{(crl.NextUpdate is { } nu && nu < time ? ", aber ABGELAUFEN" : "")}.", $"CRL of {crl.ThisUpdate:yyyy-MM-dd} (signed by CSCA serial {crlSigner.SerialNumber:X}) valid{(crl.NextUpdate is { } nu2 && nu2 < time ? ", but EXPIRED" : "")}."));
+                if (crl.IsRevoked(ds)) { steps.Add(T("DS-Zertifikat ist laut CRL GESPERRT.", "DS certificate is REVOKED according to the CRL.")); valid = false; }
+                else steps.Add(T("DS-Zertifikat ist nicht gesperrt.", "DS certificate is not revoked."));
             }
-            if (!Crls.Any(c => c.IssuerDN.Equivalent(csca.SubjectDN))) steps.Add("Keine CRL der CSCA im PKI-Speicher – Sperrstatus unbekannt.");
+            if (!Crls.Any(c => c.IssuerDN.Equivalent(csca.SubjectDN))) steps.Add(T("Keine CRL der CSCA im PKI-Speicher – Sperrstatus unbekannt.", "No CRL of the CSCA in the PKI store – revocation status unknown."));
             return new ChainResult(valid, csca, steps);
         }
         return new ChainResult(false, null, steps);
@@ -338,18 +338,18 @@ public sealed class PkiStore
             fallback = PrivateKeys.Select(k => k.Key).OfType<ECPrivateKeyParameters>().Select(k => k.Parameters)
                 .FirstOrDefault(d => { try { d.Curve.DecodePoint(cert.PublicKey.Elements[0x86]); return true; } catch { return false; } });
             report.Add(fallback != null
-                ? "⚠ CVCA ohne EC-Domain-Parameter (TR-03110-3 D.3.3) – Kurve des privaten Terminalschlüssels angenommen"
-                : "⚠ CVCA ohne EC-Domain-Parameter (TR-03110-3 D.3.3) und kein passender EC-Terminalschlüssel");
+                ? T("⚠ CVCA ohne EC-Domain-Parameter (TR-03110-3 D.3.3) – Kurve des privaten Terminalschlüssels angenommen", "⚠ CVCA without EC domain parameters (TR-03110-3 D.3.3) – curve of the private terminal key assumed")
+                : T("⚠ CVCA ohne EC-Domain-Parameter (TR-03110-3 D.3.3) und kein passender EC-Terminalschlüssel", "⚠ CVCA without EC domain parameters (TR-03110-3 D.3.3) and no matching EC terminal key"));
         }
         for (var i = 0; i < 8; i++)
         {
             var issuer = current.IsSelfSigned ? current : CvCertificates.FirstOrDefault(c => c.Chr == current.Car);
-            if (issuer == null) { report.Add($"{current.Chr}: Aussteller {current.Car} nicht im Speicher."); break; }
+            if (issuer == null) { report.Add(T($"{current.Chr}: Aussteller {current.Car} nicht im Speicher.", $"{current.Chr}: issuer {current.Car} not in the store.")); break; }
             var domain = FindDomainParameters(issuer) ?? fallback;
             bool ok;
             try { ok = current.VerifySignature(issuer.PublicKey, domain); }
-            catch (Exception ex) { report.Add($"{current.Chr}: Signaturprüfung nicht möglich: {ex.Message}"); break; }
-            report.Add($"{current.Chr}: Signatur durch {issuer.Chr} {(ok ? "gültig" : "UNGÜLTIG")}");
+            catch (Exception ex) { report.Add(T($"{current.Chr}: Signaturprüfung nicht möglich: {ex.Message}", $"{current.Chr}: signature check not possible: {ex.Message}")); break; }
+            report.Add(T($"{current.Chr}: Signatur durch {issuer.Chr} {(ok ? "gültig" : "UNGÜLTIG")}", $"{current.Chr}: signature by {issuer.Chr} {(ok ? "valid" : "INVALID")}"));
             if (current.IsSelfSigned) break;
             current = issuer;
         }

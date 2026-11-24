@@ -52,7 +52,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     [ObservableProperty, NotifyCanExecuteChangedFor(nameof(ConnectCommand), nameof(ReadDocumentCommand), nameof(ReadEvrcCommand))] private ReaderItem? selectedReader;
     [ObservableProperty, NotifyCanExecuteChangedFor(nameof(ConnectCommand), nameof(DisconnectCommand), nameof(SendApduCommand))] private bool isConnected;
-    [ObservableProperty] private string statusText = "Bereit";
+    [ObservableProperty] private string statusText = T("Bereit", "Ready");
     [ObservableProperty] private string cardInfo = string.Empty;
     [ObservableProperty] private string apduInput = "00 A4 04 0C 07 A0 00 00 02 47 10 01";
     [ObservableProperty] private string apduOutput = string.Empty;
@@ -69,9 +69,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         });
         foreach (var c in Enum.GetValues<LogCategory>()) LogLevels.Add(new LogLevelSetting(Logger, c));
         monitor.Changed += states => dispatcher.BeginInvoke(() => UpdateReaders(states));
-        monitor.Failed += ex => dispatcher.BeginInvoke(() => Logger.Error(LogCategory.Reader, $"Lesermonitor: {ex.Message}"));
+        monitor.Failed += ex => dispatcher.BeginInvoke(() => Logger.Error(LogCategory.Reader, T($"Lesermonitor: {ex.Message}", $"Reader monitor: {ex.Message}")));
         monitor.Start();
-        Logger.Info(LogCategory.Application, "eDocumentReader gestartet");
+        Logger.Info(LogCategory.Application, T("eDocumentReader gestartet", "eDocumentReader started"));
     }
 
     private void UpdateReaders(IReadOnlyList<ReaderState> states)
@@ -79,7 +79,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         foreach (var gone in Readers.Where(r => states.All(s => s.Name != r.Name)).ToList())
         {
             Readers.Remove(gone);
-            Logger.Info(LogCategory.Reader, $"Leser entfernt: {gone.Name}");
+            Logger.Info(LogCategory.Reader, T($"Leser entfernt: {gone.Name}", $"Reader removed: {gone.Name}"));
         }
         foreach (var s in states)
         {
@@ -88,10 +88,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             {
                 item = new ReaderItem(s.Name);
                 Readers.Add(item);
-                Logger.Info(LogCategory.Reader, $"Leser gefunden: {s.Name}");
+                Logger.Info(LogCategory.Reader, T($"Leser gefunden: {s.Name}", $"Reader found: {s.Name}"));
             }
             if (item.CardPresent != s.CardPresent)
-                Logger.Info(LogCategory.Reader, s.CardPresent ? $"Karte aufgelegt/gesteckt: {s.Name}" : $"Karte entfernt: {s.Name}", s.CardPresent ? s.Atr : null);
+                Logger.Info(LogCategory.Reader, s.CardPresent ? T($"Karte aufgelegt/gesteckt: {s.Name}", $"Card presented/inserted: {s.Name}") : T($"Karte entfernt: {s.Name}", $"Card removed: {s.Name}"), s.CardPresent ? s.Atr : null);
             item.CardPresent = s.CardPresent;
             item.Atr = Hex.Of(s.Atr);
             // While reading, the running inspection fails on its own; disposing the handle under it would hide the real error.
@@ -113,15 +113,15 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             transport = new PcscTransport(SelectedReader.Name, ExclusiveMode ? ShareMode.Exclusive : ShareMode.Shared);
             Channel = new CardChannel(transport, Logger, new ChannelOptions { AutoGetResponse = AutoGetResponse, AutoCorrectLe = AutoGetResponse });
             IsConnected = true;
-            Logger.Info(LogCategory.Reader, $"Verbunden mit {transport.Name}, Protokoll {transport.Protocol}, Schnittstelle {transport.Interface}", transport.Atr);
+            Logger.Info(LogCategory.Reader, T($"Verbunden mit {transport.Name}, Protokoll {transport.Protocol}, Schnittstelle {transport.Interface}", $"Connected to {transport.Name}, protocol {transport.Protocol}, interface {transport.Interface}"), transport.Atr);
             CardInfo = BuildCardInfo(transport, Channel);
-            StatusText = $"Verbunden: {transport.Name} ({transport.Interface}, {transport.Protocol})";
+            StatusText = T($"Verbunden: {transport.Name} ({transport.Interface}, {transport.Protocol})", $"Connected: {transport.Name} ({transport.Interface}, {transport.Protocol})");
         }
         catch (Exception ex)
         {
             transport?.Dispose();
             transport = null;
-            Logger.Error(LogCategory.Reader, $"Verbindung fehlgeschlagen: {ex.Message}");
+            Logger.Error(LogCategory.Reader, T($"Verbindung fehlgeschlagen: {ex.Message}", $"Connection failed: {ex.Message}"));
             StatusText = ex.Message;
         }
     }
@@ -130,26 +130,26 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         var sb = new StringBuilder();
         var atr = new AtrInfo(t.Atr);
-        sb.AppendLine($"Leser: {t.Name}");
-        sb.AppendLine($"Protokoll: {t.Protocol}   Schnittstelle: {(t.Interface == CardInterface.Contactless ? "kontaktlos (ISO/IEC 14443)" : "kontaktbehaftet (ISO/IEC 7816-3)")}");
+        sb.AppendLine(T($"Leser: {t.Name}", $"Reader: {t.Name}"));
+        sb.AppendLine(T($"Protokoll: {t.Protocol}   Schnittstelle: {(t.Interface == CardInterface.Contactless ? "kontaktlos (ISO/IEC 14443)" : "kontaktbehaftet (ISO/IEC 7816-3)")}", $"Protocol: {t.Protocol}   Interface: {(t.Interface == CardInterface.Contactless ? "contactless (ISO/IEC 14443)" : "contact (ISO/IEC 7816-3)")}"));
         sb.AppendLine();
         sb.AppendLine(atr.Describe());
         if (t.Interface == CardInterface.Contactless)
         {
             var uid = channel.GetContactlessData(historicalBytes: false);
-            sb.AppendLine($"UID/PUPI: {(uid == null ? "nicht verfügbar" : Hex.Of(uid))}{(uid is { Length: 4 } && uid[0] == 0x08 ? " (zufällige UID, ISO/IEC 14443-3)" : string.Empty)}");
+            sb.AppendLine(T($"UID/PUPI: {(uid == null ? "nicht verfügbar" : Hex.Of(uid))}{(uid is { Length: 4 } && uid[0] == 0x08 ? " (zufällige UID, ISO/IEC 14443-3)" : string.Empty)}", $"UID/PUPI: {(uid == null ? "not available" : Hex.Of(uid))}{(uid is { Length: 4 } && uid[0] == 0x08 ? " (random UID, ISO/IEC 14443-3)" : string.Empty)}"));
             var hist = channel.GetContactlessData(historicalBytes: true);
-            if (hist != null) sb.AppendLine($"ATS hist. Bytes (GET DATA P1=01): {Hex.Of(hist)}");
+            if (hist != null) sb.AppendLine(T($"ATS hist. Bytes (GET DATA P1=01): {Hex.Of(hist)}", $"ATS historical bytes (GET DATA P1=01): {Hex.Of(hist)}"));
             sb.AppendLine();
         }
         var features = ReaderFeatures.Query(t);
         sb.AppendLine("PC/SC Part 10 Features:");
-        if (features.ControlCodes.Count == 0) sb.AppendLine("  keine (Klasse-1-Leser oder Treiber ohne Part 10)");
+        if (features.ControlCodes.Count == 0) sb.AppendLine(T("  keine (Klasse-1-Leser oder Treiber ohne Part 10)", "  none (class 1 reader or driver without Part 10)"));
         foreach (var (tag, code) in features.ControlCodes) sb.AppendLine($"  {ReaderFeatures.FeatureName(tag)} → 0x{code:X8}");
-        if (features.MaxApduDataSize is { } max) sb.AppendLine($"  dwMaxAPDUDataSize: {max} ({(max == 0 ? "nur kurze APDUs" : "Extended Length bis " + max + " Bytes")})");
+        if (features.MaxApduDataSize is { } max) sb.AppendLine(T($"  dwMaxAPDUDataSize: {max} ({(max == 0 ? "nur kurze APDUs" : "Extended Length bis " + max + " Bytes")})", $"  dwMaxAPDUDataSize: {max} ({(max == 0 ? "short APDUs only" : "extended length up to " + max + " bytes")})"));
         if (features.FirmwareId is { } fw) sb.AppendLine($"  Firmware: {fw}");
         if (features.UsbVendorId is { } vid) sb.AppendLine($"  USB VID/PID: {vid:X4}/{features.UsbProductId:X4}");
-        sb.AppendLine($"  PACE im Leser: {(features.SupportsPace ? "ja" : "nein")}");
+        sb.AppendLine(T($"  PACE im Leser: {(features.SupportsPace ? "ja" : "nein")}", $"  PACE in the reader: {(features.SupportsPace ? "yes" : "no")}"));
         return sb.ToString();
     }
 
@@ -160,8 +160,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         transport = null;
         Channel = null;
         IsConnected = false;
-        StatusText = "Getrennt";
-        Logger.Info(LogCategory.Reader, "Verbindung getrennt");
+        StatusText = T("Getrennt", "Disconnected");
+        Logger.Info(LogCategory.Reader, T("Verbindung getrennt", "Connection closed"));
     }
 
     [RelayCommand]
@@ -171,9 +171,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         try
         {
             transport.Reset(cold: false);
-            Logger.Info(LogCategory.Reader, "Warm-Reset durchgeführt", transport.Atr);
+            Logger.Info(LogCategory.Reader, T("Warm-Reset durchgeführt", "Warm reset performed"), transport.Atr);
         }
-        catch (Exception ex) { Logger.Error(LogCategory.Reader, $"Reset fehlgeschlagen: {ex.Message}"); }
+        catch (Exception ex) { Logger.Error(LogCategory.Reader, T($"Reset fehlgeschlagen: {ex.Message}", $"Reset failed: {ex.Message}")); }
     }
 
     [RelayCommand(CanExecute = nameof(IsConnected))]
@@ -191,7 +191,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
-            ApduOutput = $"Fehler: {ex.Message}{Environment.NewLine}" + ApduOutput;
+            ApduOutput = T($"Fehler: {ex.Message}{Environment.NewLine}", $"Error: {ex.Message}{Environment.NewLine}") + ApduOutput;
         }
     }
 
@@ -205,7 +205,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private void SaveLog()
     {
-        var dlg = new Microsoft.Win32.SaveFileDialog { Filter = "Textdatei|*.txt", FileName = $"eDocumentReader_{DateTime.Now:yyyyMMdd_HHmmss}.log.txt" };
+        var dlg = new Microsoft.Win32.SaveFileDialog { Filter = T("Textdatei|*.txt", "Text file|*.txt"), FileName = $"eDocumentReader_{DateTime.Now:yyyyMMdd_HHmmss}.log.txt" };
         if (dlg.ShowDialog() == true) File.WriteAllText(dlg.FileName, LogSink.ToText(), Encoding.UTF8);
     }
 

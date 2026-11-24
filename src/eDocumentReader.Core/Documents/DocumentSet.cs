@@ -99,14 +99,14 @@ public static class DocumentSet
     {
         int tlvLength;
         try { tlvLength = BerTlv.ParseSingle(data).TotalLength; }
-        catch { return (data, $"{name}: kein gültiges BER-TLV, Rohbytes unverändert übernommen"); }
+        catch { return (data, T($"{name}: kein gültiges BER-TLV, Rohbytes unverändert übernommen", $"{name}: not a valid BER-TLV, raw bytes taken over unchanged")); }
         if (tlvLength >= data.Length) return (data, null);
         var trimmed = data[..tlvLength];
         var surplus = data.Length - tlvLength;
         if (sod != null && dataGroup > 0 && sod.Hashes.FirstOrDefault(h => h.DataGroup == dataGroup) is { } expected
             && !sod.Hash(trimmed).AsSpan().SequenceEqual(expected.Hash) && sod.Hash(data).AsSpan().SequenceEqual(expected.Hash))
-            return (data, $"{name}: {surplus} Byte hinter dem TLV behalten, weil nur so der SOD-Hash stimmt");
-        return (trimmed, $"{name}: {surplus} Byte Padding hinter dem TLV abgeschnitten");
+            return (data, T($"{name}: {surplus} Byte hinter dem TLV behalten, weil nur so der SOD-Hash stimmt", $"{name}: {surplus} bytes after the TLV kept, because only then the SOD hash matches"));
+        return (trimmed, T($"{name}: {surplus} Byte Padding hinter dem TLV abgeschnitten", $"{name}: {surplus} bytes of padding after the TLV cut off"));
     }
 
     /// <summary>Builds the export of an eMRTD or IDL read.</summary>
@@ -136,8 +136,8 @@ public static class DocumentSet
         foreach (var dg in result.DataGroupsListed) expected.Add(dg);
         foreach (var dg in expected.Where(d => !result.DataGroups.ContainsKey(d)))
         {
-            var step = result.Steps.LastOrDefault(s => s.Name == $"Lesen EF.DG{dg}" && s.Outcome == StepOutcome.Failed);
-            var reason = step?.Detail ?? (Lds.IsEacProtected(dg) && !isIdl ? "EAC erforderlich" : "nicht gelesen");
+            var step = result.Steps.LastOrDefault(s => s.Id == $"read:EF.DG{dg}" && s.Outcome == StepOutcome.Failed);
+            var reason = step?.Detail ?? (Lds.IsEacProtected(dg) && !isIdl ? T("EAC erforderlich", "EAC required") : T("nicht gelesen", "not read"));
             export.Origin.NotRead[$"DG{dg}"] = reason.StartsWith($"EF.DG{dg}: ") ? reason[($"EF.DG{dg}: ").Length..] : reason;
         }
 
@@ -180,9 +180,9 @@ public static class DocumentSet
         if (isIdl)
         {
             var idl = Idl.Parse(result.DataGroups);
-            string? Field(string n) => idl.Fields.FirstOrDefault(f => f.Name == n)?.Value;
-            if (Field("Familienname") is { } family) export.Holder = Title($"{Field("Vornamen")} {family}");
-            export.DocumentNumber = Field("Führerscheinnummer");
+            string? Field(string key) => idl.Fields.FirstOrDefault(f => f.Key == key)?.Value;
+            if (Field("familyName") is { } family) export.Holder = Title($"{Field("givenNames")} {family}");
+            export.DocumentNumber = Field("licenceNumber");
         }
         return export;
     }
@@ -220,7 +220,7 @@ public static class DocumentSet
     public static string FolderName(SetExport export)
     {
         var type = export.DocumentType.ToString().ToUpperInvariant();
-        var number = string.IsNullOrWhiteSpace(export.DocumentNumber) ? "unbekannt" : export.DocumentNumber;
+        var number = string.IsNullOrWhiteSpace(export.DocumentNumber) ? T("unbekannt", "unknown") : export.DocumentNumber;
         var invalid = Path.GetInvalidFileNameChars().Concat([' ']).ToHashSet();
         var safe = new string(number.Select(c => invalid.Contains(c) ? '_' : c).ToArray());
         return $"{type}_{safe}_{export.Created:yyyyMMdd-HHmmss}";
@@ -230,7 +230,7 @@ public static class DocumentSet
     public static string Write(SetExport export, string parentDirectory)
     {
         var dir = Path.Combine(parentDirectory, FolderName(export));
-        if (Directory.Exists(dir)) throw new IOException($"Ordner existiert bereits: {dir}");
+        if (Directory.Exists(dir)) throw new IOException(T($"Ordner existiert bereits: {dir}", $"Folder already exists: {dir}"));
         Directory.CreateDirectory(Path.Combine(dir, "ef"));
         var entries = new List<FileEntry>();
         foreach (var f in export.Files)
@@ -277,7 +277,7 @@ public static class DocumentSet
         [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] int? DataGroup,
         string Name, string Path, string FileId, int Length, string Sha256);
 
-    private static string Outcome(EmrtdReadResult r, string step) => r.Steps.LastOrDefault(s => s.Name == step)?.Outcome switch
+    private static string Outcome(EmrtdReadResult r, string step) => r.Steps.LastOrDefault(s => s.Id == step)?.Outcome switch
     {
         StepOutcome.Success => "OK",
         StepOutcome.Failed => "FAILED",

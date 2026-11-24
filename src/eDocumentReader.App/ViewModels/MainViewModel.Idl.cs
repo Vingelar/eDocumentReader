@@ -13,31 +13,31 @@ public sealed partial class MainViewModel
     private IdlImage? idlPortrait;
 
     [ObservableProperty] private string dataPanelTitle = "DG1 – MRZ";
-    [ObservableProperty] private string imagePanelTitle = "DG2 – Gesichtsbild";
+    [ObservableProperty] private string imagePanelTitle = T("DG2 – Gesichtsbild", "DG2 – facial image");
     [ObservableProperty] private BitmapSource? signatureBitmap;
 
     public ObservableCollection<IdlField> IdlFields { get; } = [];
 
     private void ShowIdlResult(EmrtdReadResult result)
     {
-        DataPanelTitle = "Führerschein – DG1 Pflichtdaten";
-        ImagePanelTitle = "DG4 – Lichtbild";
+        DataPanelTitle = T("Führerschein – DG1 Pflichtdaten", "Driving licence – DG1 mandatory data");
+        ImagePanelTitle = T("DG4 – Lichtbild", "DG4 – portrait");
         IdlReadout idl;
         try { idl = Idl.Parse(result.DataGroups); }
-        catch (Exception ex) { MrzFindings = "⚠ IDL-Datengruppen: " + ex.Message; return; }
+        catch (Exception ex) { MrzFindings = T("⚠ IDL-Datengruppen: ", "⚠ IDL data groups: ") + ex.Message; return; }
         foreach (var f in idl.Fields) IdlFields.Add(f);
 
         // Overview panel: the DG1 fields, then the driving privileges.
         foreach (var f in idl.Fields.Where(f => f.Path.StartsWith("DG1/5F1F") || f.TagHex == "53" && f.Path.StartsWith("DG1")))
             MrzRows.Add(new MrzRow(f.Name, f.Value, f.Findings.Count == 0 ? "✔" : "⚠"));
         foreach (var c in idl.Categories)
-            MrzRows.Add(new MrzRow($"Klasse {c.Category}", c.Describe(), c.Findings.Count == 0 ? "✔" : "⚠"));
+            MrzRows.Add(new MrzRow(T($"Klasse {c.Category}", $"Category {c.Category}"), c.Describe(), c.Findings.Count == 0 ? "✔" : "⚠"));
         var missing = new[] { 1, 2, 4, 5 }.Where(d => !result.DataGroups.ContainsKey(d)).Select(d => $"DG{d}").ToList();
         var findings = idl.Fields.Where(f => f.Path.StartsWith("DG1")).SelectMany(f => f.Findings).Concat(idl.Categories.SelectMany(c => c.Findings)).Distinct()
             .Select(x => "⚠ " + x).ToList();
-        if (missing.Count > 0) findings.Insert(0, $"Nicht gelesen: {string.Join(", ", missing)} (geschützt – Terminal Authentication nötig?)");
+        if (missing.Count > 0) findings.Insert(0, T($"Nicht gelesen: {string.Join(", ", missing)} (geschützt – Terminal Authentication nötig?)", $"Not read: {string.Join(", ", missing)} (protected – Terminal Authentication required?)"));
         MrzFindings = string.Join(Environment.NewLine, findings);
-        MrzText = string.Join("  ·  ", idl.Fields.Where(f => f.Name is "Familienname" or "Vornamen" or "Führerscheinnummer").Select(f => f.Value));
+        MrzText = string.Join("  ·  ", idl.Fields.Where(f => f.Key is "familyName" or "givenNames" or "licenceNumber").Select(f => f.Value));
 
         idlPortrait = idl.Images.FirstOrDefault(i => i.DataGroup == 4);
         if (idlPortrait != null)
@@ -45,25 +45,25 @@ public sealed partial class MainViewModel
             try { FaceBitmap = FaceImageDecoder.DecodeAny(idlPortrait.Data); }
             catch (Exception ex) { FaceInfo = "⚠ DG4: " + ex.Message; }
             FaceInfo = $"{idlPortrait.Format}, {idlPortrait.Data.Length} Byte" +
-                (idlPortrait.Captured != null ? $", aufgenommen {idlPortrait.Captured}" : "") +
-                (idlPortrait.ImageType != null ? $", Bildtyp {idlPortrait.ImageType}" : "") +
+                (idlPortrait.Captured != null ? T($", aufgenommen {idlPortrait.Captured}", $", captured {idlPortrait.Captured}") : "") +
+                (idlPortrait.ImageType != null ? T($", Bildtyp {idlPortrait.ImageType}", $", image type {idlPortrait.ImageType}") : "") +
                 (FaceInfo.StartsWith('⚠') ? Environment.NewLine + FaceInfo : "");
         }
-        else FaceInfo = result.DataGroups.ContainsKey(4) ? "DG4 enthält kein Bild (5F40)." : "DG4 nicht gelesen.";
+        else FaceInfo = result.DataGroups.ContainsKey(4) ? T("DG4 enthält kein Bild (5F40).", "DG4 contains no image (5F40).") : T("DG4 nicht gelesen.", "DG4 not read.");
 
         if (idl.Images.FirstOrDefault(i => i.DataGroup == 5) is { } signature)
         {
             try { SignatureBitmap = FaceImageDecoder.DecodeAny(signature.Data); }
-            catch (Exception ex) { FaceInfo += Environment.NewLine + "⚠ DG5 Unterschrift: " + ex.Message; }
+            catch (Exception ex) { FaceInfo += Environment.NewLine + T("⚠ DG5 Unterschrift: ", "⚠ DG5 signature: ") + ex.Message; }
         }
         else if (idl.Fields.FirstOrDefault(f => f.Path.StartsWith("DG5") && f.TagHex == "53") is { } text)
-            FaceInfo += Environment.NewLine + $"DG5: „{text.Value}“ (kein Bild)";
+            FaceInfo += Environment.NewLine + T($"DG5: „{text.Value}“ (kein Bild)", $"DG5: \"{text.Value}\" (no image)");
     }
 
     private void SaveIdlPortrait(IdlImage image)
     {
         var ext = image.Format == "JPEG" ? "jpg" : "jp2";
-        var dlg = new Microsoft.Win32.SaveFileDialog { Filter = $"Originalbild (*.{ext})|*.{ext}|PNG (*.png)|*.png", FileName = $"DG4_Lichtbild.{ext}" };
+        var dlg = new Microsoft.Win32.SaveFileDialog { Filter = T($"Originalbild (*.{ext})|*.{ext}|PNG (*.png)|*.png", $"Original image (*.{ext})|*.{ext}|PNG (*.png)|*.png"), FileName = T($"DG4_Lichtbild.{ext}", $"DG4_portrait.{ext}") };
         if (dlg.ShowDialog() != true) return;
         if (dlg.FilterIndex == 2 && FaceBitmap != null)
         {

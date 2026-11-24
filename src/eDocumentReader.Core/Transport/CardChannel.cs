@@ -31,7 +31,7 @@ public sealed class CardChannel(ICardTransport transport, Logger logger, Channel
 
         if (Options.AutoCorrectLe && response.Status.Sw1 == 0x6C && command.Ne > 0)
         {
-            Logger.Detail(LogCategory.Apdu, $"SW 6C{response.Status.Sw2:X2}: Kommando wird mit Le={response.Status.Sw2:X2} wiederholt (ISO/IEC 7816-4 5.1.3)");
+            Logger.Detail(LogCategory.Apdu, T($"SW 6C{response.Status.Sw2:X2}: Kommando wird mit Le={response.Status.Sw2:X2} wiederholt (ISO/IEC 7816-4 5.1.3)", $"SW 6C{response.Status.Sw2:X2}: repeating the command with Le={response.Status.Sw2:X2} (ISO/IEC 7816-4 5.1.3)"));
             response = TransmitOnce(command.WithNe(response.Status.Sw2 == 0 ? 256 : response.Status.Sw2), label);
         }
 
@@ -65,7 +65,7 @@ public sealed class CardChannel(ICardTransport transport, Logger logger, Channel
         }
         catch (Exception ex)
         {
-            Logger.Error(LogCategory.Reader, $"Übertragungsfehler: {ex.Message}");
+            Logger.Error(LogCategory.Reader, T($"Übertragungsfehler: {ex.Message}", $"Transmission error: {ex.Message}"));
             throw;
         }
         sw.Stop();
@@ -77,7 +77,7 @@ public sealed class CardChannel(ICardTransport transport, Logger logger, Channel
 
     public static string DescribeCommand(byte[] apdu)
     {
-        if (apdu.Length < 4) return "Ungültiges APDU";
+        if (apdu.Length < 4) return T("Ungültiges APDU", "Invalid APDU");
         var name = apdu[1] switch
         {
             0xA4 => "SELECT",
@@ -112,12 +112,12 @@ public sealed class CardChannel(ICardTransport transport, Logger logger, Channel
         try
         {
             var r = TransmitOnce(new CommandApdu(0xFF, 0xCA, historicalBytes ? (byte)0x01 : (byte)0x00, 0x00, null, 256),
-                historicalBytes ? "PC/SC GET DATA (ATS hist. Bytes)" : "PC/SC GET DATA (UID)");
+                historicalBytes ? T("PC/SC GET DATA (ATS hist. Bytes)", "PC/SC GET DATA (ATS historical bytes)") : "PC/SC GET DATA (UID)");
             return r.Status.IsSuccess ? r.Data : null;
         }
         catch (Exception ex)
         {
-            Logger.Warning(LogCategory.Reader, $"PC/SC GET DATA nicht verfügbar: {ex.Message}");
+            Logger.Warning(LogCategory.Reader, T($"PC/SC GET DATA nicht verfügbar: {ex.Message}", $"PC/SC GET DATA not available: {ex.Message}"));
             return null;
         }
     }

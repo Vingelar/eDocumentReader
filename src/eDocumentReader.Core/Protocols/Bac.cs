@@ -46,7 +46,7 @@ public static class Bac
 
         var challenge = channel.Transmit(new CommandApdu(0x00, 0x84, 0x00, 0x00, null, 8), "GET CHALLENGE");
         if (!challenge.Status.IsSuccess || challenge.Data.Length != 8)
-            throw new ProtocolException($"GET CHALLENGE fehlgeschlagen: {challenge.Status} {challenge.Status.Description}", challenge.Status);
+            throw new ProtocolException(T($"GET CHALLENGE fehlgeschlagen: {challenge.Status} {challenge.Status.Description}", $"GET CHALLENGE failed: {challenge.Status} {challenge.Status.Description}"), challenge.Status);
         var rndIc = challenge.Data;
         rndIfd ??= RandomNumberGenerator.GetBytes(8);
         kIfd ??= RandomNumberGenerator.GetBytes(16);
@@ -63,18 +63,18 @@ public static class Bac
 
         var response = channel.Transmit(new CommandApdu(0x00, 0x82, 0x00, 0x00, [.. eIfd, .. mIfd], 0x28), "EXTERNAL AUTHENTICATE (BAC)");
         if (!response.Status.IsSuccess)
-            throw new ProtocolException($"BAC: EXTERNAL AUTHENTICATE abgelehnt: {response.Status} {response.Status.Description} (falsche MRZ-Daten?)", response.Status);
-        if (response.Data.Length != 40) throw new ProtocolException($"BAC: Antwortlänge {response.Data.Length} ≠ 40.");
+            throw new ProtocolException(T($"BAC: EXTERNAL AUTHENTICATE abgelehnt: {response.Status} {response.Status.Description} (falsche MRZ-Daten?)", $"BAC: EXTERNAL AUTHENTICATE rejected: {response.Status} {response.Status.Description} (wrong MRZ data?)"), response.Status);
+        if (response.Data.Length != 40) throw new ProtocolException(T($"BAC: Antwortlänge {response.Data.Length} ≠ 40.", $"BAC: response length {response.Data.Length} ≠ 40."));
 
         var eIc = response.Data[..32];
         var mIc = response.Data[32..];
         var expectedMac = SymmetricCrypto.RetailMac(kMac, SymmetricCrypto.Pad(eIc, 8));
         if (!expectedMac.AsSpan().SequenceEqual(mIc))
-            throw new ProtocolException($"BAC: M.IC ungültig (erhalten {Hex.Compact(mIc)}, berechnet {Hex.Compact(expectedMac)}).");
+            throw new ProtocolException(T($"BAC: M.IC ungültig (erhalten {Hex.Compact(mIc)}, berechnet {Hex.Compact(expectedMac)}).", $"BAC: M.IC invalid (received {Hex.Compact(mIc)}, computed {Hex.Compact(expectedMac)})."));
         var r = SymmetricCrypto.CbcDecrypt(CipherAlgorithm.DesEde, kEnc, new byte[8], eIc);
         log.Detail(LogCategory.Crypto, "R = D(KEnc, E.IC) = RND.IC || RND.IFD || K.IC", r, Ref);
-        if (!r.AsSpan(0, 8).SequenceEqual(rndIc)) throw new ProtocolException("BAC: RND.IC in der Antwort stimmt nicht.");
-        if (!r.AsSpan(8, 8).SequenceEqual(rndIfd)) throw new ProtocolException("BAC: RND.IFD in der Antwort stimmt nicht.");
+        if (!r.AsSpan(0, 8).SequenceEqual(rndIc)) throw new ProtocolException(T("BAC: RND.IC in der Antwort stimmt nicht.", "BAC: RND.IC in the response does not match."));
+        if (!r.AsSpan(8, 8).SequenceEqual(rndIfd)) throw new ProtocolException(T("BAC: RND.IFD in der Antwort stimmt nicht.", "BAC: RND.IFD in the response does not match."));
         var kIc = r[16..32];
 
         var sessionSeed = new byte[16];
@@ -82,11 +82,11 @@ public static class Bac
         var ksEnc = Kdf.Derive(sessionSeed, Kdf.CounterEnc, SessionKeyType.DesEde);
         var ksMac = Kdf.Derive(sessionSeed, Kdf.CounterMac, SessionKeyType.DesEde);
         byte[] ssc = [.. rndIc[4..], .. rndIfd[4..]];
-        log.Detail(LogCategory.Crypto, "Kseed(Sitzung) = K.IFD ⊕ K.IC", sessionSeed, Ref);
+        log.Detail(LogCategory.Crypto, T("Kseed(Sitzung) = K.IFD ⊕ K.IC", "Kseed(session) = K.IFD ⊕ K.IC"), sessionSeed, Ref);
         log.Detail(LogCategory.Crypto, "KSEnc", ksEnc, "9303-11 9.7.1");
         log.Detail(LogCategory.Crypto, "KSMAC", ksMac, "9303-11 9.7.1");
         log.Detail(LogCategory.Crypto, "SSC = RND.IC[4..7] || RND.IFD[4..7]", ssc, "9303-11 9.8.6.3");
-        log.Info(LogCategory.Protocol, "BAC erfolgreich – Secure Messaging (3DES) aktiv", null, Ref);
+        log.Info(LogCategory.Protocol, T("BAC erfolgreich – Secure Messaging (3DES) aktiv", "BAC successful – secure messaging (3DES) active"), null, Ref);
         return new SecureChannel(channel, SessionKeyType.DesEde, ksEnc, ksMac, ssc, "BAC");
     }
 }

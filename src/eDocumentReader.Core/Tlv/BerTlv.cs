@@ -70,7 +70,7 @@ public sealed class BerTlv
         {
             if (data[pos] == 0x00)
             {
-                if (insideTemplate) throw new TlvException(baseOffset + pos, "Füllbyte '00' innerhalb eines Templates ist nach ISO/IEC 7816-4 5.2.2.1 unzulässig.");
+                if (insideTemplate) throw new TlvException(baseOffset + pos, T("Füllbyte '00' innerhalb eines Templates ist nach ISO/IEC 7816-4 5.2.2.1 unzulässig.", "Padding byte '00' inside a template is not allowed (ISO/IEC 7816-4 5.2.2.1)."));
                 pos++;
                 continue;
             }
@@ -83,49 +83,49 @@ public sealed class BerTlv
     {
         var start = pos;
         var findings = new List<string>();
-        if (pos >= data.Length) throw new TlvException(baseOffset + pos, "Unerwartetes Ende vor Tag-Feld.");
-        if (data[pos] == 0x00) throw new TlvException(baseOffset + pos, "Tag-Byte '00' ist ungültig (ISO/IEC 7816-4 5.2.2).");
+        if (pos >= data.Length) throw new TlvException(baseOffset + pos, T("Unerwartetes Ende vor Tag-Feld.", "Unexpected end before the tag field."));
+        if (data[pos] == 0x00) throw new TlvException(baseOffset + pos, T("Tag-Byte '00' ist ungültig (ISO/IEC 7816-4 5.2.2).", "Tag byte '00' is invalid (ISO/IEC 7816-4 5.2.2)."));
 
         var tagStart = pos++;
         if ((data[tagStart] & 0x1F) == 0x1F)
         {
-            if (pos >= data.Length) throw new TlvException(baseOffset + pos, "Unerwartetes Ende im Tag-Feld.");
-            if ((data[pos] & 0x7F) == 0) findings.Add("Bits 7..1 des ersten Folgebytes im Tag sind alle 0 (ISO/IEC 7816-4 5.2.2.1).");
+            if (pos >= data.Length) throw new TlvException(baseOffset + pos, T("Unerwartetes Ende im Tag-Feld.", "Unexpected end in the tag field."));
+            if ((data[pos] & 0x7F) == 0) findings.Add(T("Bits 7..1 des ersten Folgebytes im Tag sind alle 0 (ISO/IEC 7816-4 5.2.2.1).", "Bits 7..1 of the first subsequent tag byte are all 0 (ISO/IEC 7816-4 5.2.2.1)."));
             // 7816-4 5.2.2.1 forbids '00'..'1E' as second tag byte. ICAO 9303-10 / ISO/IEC 18013-2 nevertheless define
             // application-class tags '5F01'..'5F1E' (e.g. LDS version '5F01'); these are accepted as specified there.
             if (data[pos] <= 0x1E && !(data[tagStart] == 0x5F && data[pos] != 0x00))
-                findings.Add($"Zweites Tag-Byte {data[pos]:X2} kodiert Tag-Nummer < 31 in Langform (ISO/IEC 7816-4 5.2.2.1: unzulässig).");
+                findings.Add(T($"Zweites Tag-Byte {data[pos]:X2} kodiert Tag-Nummer < 31 in Langform (ISO/IEC 7816-4 5.2.2.1: unzulässig).", $"Second tag byte {data[pos]:X2} encodes a tag number < 31 in long form (ISO/IEC 7816-4 5.2.2.1: not allowed)."));
             while ((data[pos] & 0x80) != 0)
             {
                 pos++;
-                if (pos >= data.Length) throw new TlvException(baseOffset + pos, "Unerwartetes Ende im Tag-Feld.");
+                if (pos >= data.Length) throw new TlvException(baseOffset + pos, T("Unerwartetes Ende im Tag-Feld.", "Unexpected end in the tag field."));
             }
             pos++;
-            if (pos - tagStart > 3) findings.Add($"Tag-Feld mit {pos - tagStart} Bytes; ISO/IEC 7816 unterstützt max. 3 Bytes.");
+            if (pos - tagStart > 3) findings.Add(T($"Tag-Feld mit {pos - tagStart} Bytes; ISO/IEC 7816 unterstützt max. 3 Bytes.", $"Tag field with {pos - tagStart} bytes; ISO/IEC 7816 supports at most 3 bytes."));
         }
         var tagBytes = data[tagStart..pos].ToArray();
 
-        if (pos >= data.Length) throw new TlvException(baseOffset + pos, $"Unerwartetes Ende vor Längenfeld (Tag {Hex.Compact(tagBytes)}).");
+        if (pos >= data.Length) throw new TlvException(baseOffset + pos, T($"Unerwartetes Ende vor Längenfeld (Tag {Hex.Compact(tagBytes)}).", $"Unexpected end before the length field (tag {Hex.Compact(tagBytes)})."));
         int length;
         var first = data[pos++];
         if (first < 0x80) length = first;
-        else if (first == 0x80) throw new TlvException(baseOffset + pos - 1, "Unbestimmte Länge '80' wird in ISO/IEC 7816 nicht verwendet.");
+        else if (first == 0x80) throw new TlvException(baseOffset + pos - 1, T("Unbestimmte Länge '80' wird in ISO/IEC 7816 nicht verwendet.", "Indefinite length '80' is not used in ISO/IEC 7816."));
         else
         {
             var count = first & 0x7F;
-            if (count > 4) throw new TlvException(baseOffset + pos - 1, $"Längenfeld-Byte {first:X2} ungültig (nur '81'..'84').");
-            if (pos + count > data.Length) throw new TlvException(baseOffset + pos, "Unerwartetes Ende im Längenfeld.");
+            if (count > 4) throw new TlvException(baseOffset + pos - 1, T($"Längenfeld-Byte {first:X2} ungültig (nur '81'..'84').", $"Length field byte {first:X2} invalid (only '81'..'84')."));
+            if (pos + count > data.Length) throw new TlvException(baseOffset + pos, T("Unerwartetes Ende im Längenfeld.", "Unexpected end in the length field."));
             long l = 0;
             for (var i = 0; i < count; i++) l = (l << 8) | data[pos++];
-            if (l > int.MaxValue) throw new TlvException(baseOffset + pos, "Länge zu groß.");
+            if (l > int.MaxValue) throw new TlvException(baseOffset + pos, T("Länge zu groß.", "Length too large."));
             length = (int)l;
             var minimal = length < 0x80 ? 0 : length <= 0xFF ? 1 : length <= 0xFFFF ? 2 : length <= 0xFFFFFF ? 3 : 4;
-            if (count != minimal) findings.Add($"Längenfeld nicht minimal kodiert ({count + 1} Bytes für {length}) – DER-Verstoß.");
+            if (count != minimal) findings.Add(T($"Längenfeld nicht minimal kodiert ({count + 1} Bytes für {length}) – DER-Verstoß.", $"Length field not minimally encoded ({count + 1} bytes for {length}) – DER violation."));
         }
 
         var headerLength = pos - start;
         if (pos + length > data.Length)
-            throw new TlvException(baseOffset + start, $"Tag {Hex.Compact(tagBytes)}: Länge {length} überschreitet verfügbare {data.Length - pos} Bytes.");
+            throw new TlvException(baseOffset + start, T($"Tag {Hex.Compact(tagBytes)}: Länge {length} überschreitet verfügbare {data.Length - pos} Bytes.", $"Tag {Hex.Compact(tagBytes)}: length {length} exceeds the available {data.Length - pos} bytes."));
         var value = data.Slice(pos, length);
         pos += length;
 
@@ -190,7 +190,7 @@ public sealed class BerTlv
     }
 }
 
-public sealed class TlvException(int offset, string message) : FormatException($"TLV-Fehler bei Offset {offset}: {message}")
+public sealed class TlvException(int offset, string message) : FormatException(T($"TLV-Fehler bei Offset {offset}: {message}", $"TLV error at offset {offset}: {message}"))
 {
     public int Offset { get; } = offset;
 }

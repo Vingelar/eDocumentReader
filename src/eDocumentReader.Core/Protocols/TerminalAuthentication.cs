@@ -37,7 +37,7 @@ public static class TerminalAuthentication
         {
             var last = i == blocks - 1;
             var block = data.AsSpan(i * max, Math.Min(max, data.Length - i * max)).ToArray();
-            response = channel.Transmit(new CommandApdu(last ? (byte)0x00 : (byte)0x10, ins, p1, p2, block), $"{label} [Block {i + 1}/{blocks}{(last ? "" : ", verkettet")}]");
+            response = channel.Transmit(new CommandApdu(last ? (byte)0x00 : (byte)0x10, ins, p1, p2, block), T($"{label} [Block {i + 1}/{blocks}{(last ? "" : ", verkettet")}]", $"{label} [block {i + 1}/{blocks}{(last ? "" : ", chained")}]"));
             if (!last && !response.Status.IsSuccess) return response;
         }
         return response!;
@@ -56,7 +56,7 @@ public static class TerminalAuthentication
         var log = channel.Logger;
         var steps = new List<string>();
         var terminal = chain[^1];
-        log.Info(LogCategory.Protocol, $"Terminal Authentication v1 mit {terminal.Chr} ({TaOids.Name(terminal.PublicKey.Oid)}, {terminal.DescribeAuthorization()})", null, Ref);
+        log.Info(LogCategory.Protocol, T($"Terminal Authentication v1 mit {terminal.Chr} ({TaOids.Name(terminal.PublicKey.Oid)}, {terminal.DescribeAuthorization()})", $"Terminal Authentication v1 with {terminal.Chr} ({TaOids.Name(terminal.PublicKey.Oid)}, {terminal.DescribeAuthorization()})"), null, Ref);
 
         // TR-03110-3 B.11.5: data field = certificate body '7F4E' || signature '5F37' (without the outer '7F21').
         // Some chips expect the complete certificate; after 6A80 the complete encoding is tried once (reported as a deviation).
@@ -69,14 +69,14 @@ public static class TerminalAuthentication
             {
                 var dst = channel.Transmit(new CommandApdu(0x00, 0x22, 0x81, 0xB6, BerTlv.Encode(0x83, Encoding.Latin1.GetBytes(cert.Car))), $"MSE:Set DST (CAR {cert.Car})");
                 if (!dst.Status.IsSuccess)
-                    return Fail($"MSE:Set DST für CAR {cert.Car}: {dst.Status} {dst.Status.Description}");
+                    return Fail(T($"MSE:Set DST für CAR {cert.Car}: {dst.Status} {dst.Status.Description}", $"MSE:Set DST for CAR {cert.Car}: {dst.Status} {dst.Status.Description}"));
                 byte[] data = wrapped ? cert.Encoded : [.. cert.Body, .. BerTlv.Encode(0x5F37, cert.Signature)];
                 pso = SendChained(channel, 0x2A, 0x00, 0xBE, data, maxCommandData,
-                    $"PSO:Verify Certificate ({cert.Chr}{(wrapped ? ", mit '7F21'" : "")})");
+                    T($"PSO:Verify Certificate ({cert.Chr}{(wrapped ? ", mit '7F21'" : "")})", $"PSO:Verify Certificate ({cert.Chr}{(wrapped ? ", with '7F21'" : "")})"));
                 if (pso.Status.Value == 0x6A80 && !wrapped && attempt++ == 0)
                 {
                     wrapped = true;
-                    var finding = "⚠ PSO:Verify Certificate: Chip lehnt '7F4E'||'5F37' (TR-03110-3 B.11.5) mit 6A80 ab und erwartet das vollständige Zertifikat mit '7F21'";
+                    var finding = T("⚠ PSO:Verify Certificate: Chip lehnt '7F4E'||'5F37' (TR-03110-3 B.11.5) mit 6A80 ab und erwartet das vollständige Zertifikat mit '7F21'", "⚠ PSO:Verify Certificate: the chip rejects '7F4E'||'5F37' (TR-03110-3 B.11.5) with 6A80 and expects the complete certificate with '7F21'");
                     steps.Add(finding);
                     log.Warning(LogCategory.Protocol, finding, null, Ref);
                     continue;
@@ -85,7 +85,7 @@ public static class TerminalAuthentication
             }
             if (!pso.Status.IsSuccess)
                 return Fail($"PSO:Verify Certificate {cert.Chr}: {pso.Status} {pso.Status.Description}");
-            steps.Add($"Zertifikat {cert.Chr} vom Chip akzeptiert{(wrapped ? " (mit '7F21')" : "")}");
+            steps.Add(T($"Zertifikat {cert.Chr} vom Chip akzeptiert{(wrapped ? " (mit '7F21')" : "")}", $"Certificate {cert.Chr} accepted by the chip{(wrapped ? " (with '7F21')" : "")}"));
         }
 
         var at = channel.Transmit(new CommandApdu(0x00, 0x22, 0x81, 0xA4, BerTlv.Encode(0x83, Encoding.Latin1.GetBytes(terminal.Chr))), "MSE:Set AT (Terminal Authentication)");
@@ -106,13 +106,13 @@ public static class TerminalAuthentication
 
         var ext = channel.Transmit(new CommandApdu(0x00, 0x82, 0x00, 0x00, sPcd), "EXTERNAL AUTHENTICATE (Terminal Authentication)");
         if (!ext.Status.IsSuccess) return Fail($"EXTERNAL AUTHENTICATE: {ext.Status} {ext.Status.Description}");
-        steps.Add("EXTERNAL AUTHENTICATE erfolgreich");
-        log.Info(LogCategory.Protocol, $"Terminal Authentication erfolgreich – Rechte: {terminal.DescribeAuthorization()}", null, Ref);
+        steps.Add(T("EXTERNAL AUTHENTICATE erfolgreich", "EXTERNAL AUTHENTICATE successful"));
+        log.Info(LogCategory.Protocol, T($"Terminal Authentication erfolgreich – Rechte: {terminal.DescribeAuthorization()}", $"Terminal Authentication successful – rights: {terminal.DescribeAuthorization()}"), null, Ref);
         return new TerminalAuthenticationResult(true, terminal.DescribeAuthorization(), steps);
 
         TerminalAuthenticationResult Fail(string message)
         {
-            log.Error(LogCategory.Protocol, "Terminal Authentication fehlgeschlagen: " + message, null, Ref);
+            log.Error(LogCategory.Protocol, T("Terminal Authentication fehlgeschlagen: ", "Terminal Authentication failed: ") + message, null, Ref);
             steps.Add(message);
             return new TerminalAuthenticationResult(false, message, steps);
         }

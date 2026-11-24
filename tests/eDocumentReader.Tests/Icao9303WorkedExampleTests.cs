@@ -30,7 +30,7 @@ public class Icao9303WorkedExampleTests
         var mrz = Mrz.Parse(mrzText);
         // Note: the ERIKSSON examples in 9303-11 App. D carry an incorrect composite check digit (correct value: 2).
         // Only the fields relevant for BAC are required to be consistent here.
-        Assert.All(mrz.Fields.Where(f => f.Name != "Gesamtprüfziffer"), f => Assert.True(f.Valid != false, f.Name));
+        Assert.All(mrz.Fields.Where(f => f.Key != "composite"), f => Assert.True(f.Valid != false, f.Name));
         Assert.Equal(expected, mrz.KeySeedInformation);
     }
 

@@ -63,11 +63,11 @@ public static class ChipAuthentication
         var log = channel.Logger;
         var keyType = KeyType(caOid);
         log.Info(LogCategory.Protocol, $"Chip Authentication: {Oids.Name(caOid)}{(chipKey.KeyId is { } kid ? $", KeyID {kid}" : "")}", null, Ref);
-        log.Detail(LogCategory.Crypto, "PK_IC (statisch)", chipKey.PublicKey, Ref);
+        log.Detail(LogCategory.Crypto, T("PK_IC (statisch)", "PK_IC (static)"), chipKey.PublicKey, Ref);
 
         var eph = chipKey.Domain.Generate(testPrivateKey);
-        log.Detail(LogCategory.Crypto, "SK_PCD (ephemer)", eph.PrivateKey.ToByteArrayUnsigned(), Ref);
-        log.Detail(LogCategory.Crypto, "PK_PCD (ephemer)", eph.PublicKey, Ref);
+        log.Detail(LogCategory.Crypto, T("SK_PCD (ephemer)", "SK_PCD (ephemeral)"), eph.PrivateKey.ToByteArrayUnsigned(), Ref);
+        log.Detail(LogCategory.Crypto, T("PK_PCD (ephemer)", "PK_PCD (ephemeral)"), eph.PublicKey, Ref);
         byte[]? keyRef = chipKey.KeyId is { } id ? EncodeKeyReference(id) : null;
 
         if (keyType == SessionKeyType.DesEde && !useSetAtFor3Des)
@@ -76,7 +76,7 @@ public static class ChipAuthentication
             var data = new List<byte>(BerTlv.Encode(0x91, eph.PublicKey));
             if (keyRef != null) data.AddRange(BerTlv.Encode(0x84, keyRef));
             var r = channel.Transmit(new CommandApdu(0x00, 0x22, 0x41, 0xA6, [.. data]), "MSE:Set KAT (Chip Authentication)");
-            if (!r.Status.IsSuccess) throw new ProtocolException($"Chip Authentication (MSE:Set KAT) abgelehnt: {r.Status} {r.Status.Description}", r.Status);
+            if (!r.Status.IsSuccess) throw new ProtocolException(T($"Chip Authentication (MSE:Set KAT) abgelehnt: {r.Status} {r.Status.Description}", $"Chip Authentication (MSE:Set KAT) rejected: {r.Status} {r.Status.Description}"), r.Status);
         }
         else
         {
@@ -85,11 +85,11 @@ public static class ChipAuthentication
             var data = new List<byte>(BerTlv.Encode(0x80, oid));
             if (keyRef != null) data.AddRange(BerTlv.Encode(0x84, keyRef));
             var mse = channel.Transmit(new CommandApdu(0x00, 0x22, 0x41, 0xA4, [.. data]), "MSE:Set AT (Chip Authentication)");
-            if (!mse.Status.IsSuccess) throw new ProtocolException($"Chip Authentication (MSE:Set AT) abgelehnt: {mse.Status} {mse.Status.Description}", mse.Status);
+            if (!mse.Status.IsSuccess) throw new ProtocolException(T($"Chip Authentication (MSE:Set AT) abgelehnt: {mse.Status} {mse.Status.Description}", $"Chip Authentication (MSE:Set AT) rejected: {mse.Status} {mse.Status.Description}"), mse.Status);
             var ga = channel.Transmit(new CommandApdu(0x00, 0x86, 0x00, 0x00, BerTlv.Encode(0x7C, BerTlv.Encode(0x80, eph.PublicKey)), 256), "GENERAL AUTHENTICATE (Chip Authentication)");
-            if (!ga.Status.IsSuccess) throw new ProtocolException($"Chip Authentication (GENERAL AUTHENTICATE) abgelehnt: {ga.Status} {ga.Status.Description}", ga.Status);
+            if (!ga.Status.IsSuccess) throw new ProtocolException(T($"Chip Authentication (GENERAL AUTHENTICATE) abgelehnt: {ga.Status} {ga.Status.Description}", $"Chip Authentication (GENERAL AUTHENTICATE) rejected: {ga.Status} {ga.Status.Description}"), ga.Status);
             if (ga.Data.Length > 0 && BerTlv.ParseSingle(ga.Data).Tag != 0x7C)
-                log.Warning(LogCategory.Protocol, "Antwort auf GENERAL AUTHENTICATE ist kein '7C'-Objekt (TR-03110-3 B.14.2).");
+                log.Warning(LogCategory.Protocol, T("Antwort auf GENERAL AUTHENTICATE ist kein '7C'-Objekt (TR-03110-3 B.14.2).", "Response to GENERAL AUTHENTICATE is not a '7C' object (TR-03110-3 B.14.2)."));
         }
 
         var k = chipKey.Domain.Agree(eph.PrivateKey, chipKey.PublicKey);
@@ -99,8 +99,8 @@ public static class ChipAuthentication
         log.Detail(LogCategory.Crypto, "KSEnc = KDF(K, 1)", ksEnc, "9303-11 9.7.1");
         log.Detail(LogCategory.Crypto, "KSMAC = KDF(K, 2)", ksMac, "9303-11 9.7.1");
         var comp = chipKey.Domain.Compress(eph.PublicKey);
-        log.Detail(LogCategory.Crypto, "Comp(PK_PCD) fÃ¼r Terminal Authentication", comp, "TR-03110-3 A.2.2.3");
-        log.Info(LogCategory.Protocol, "Chip Authentication erfolgreich â€“ Secure Messaging mit neuen SitzungsschlÃ¼sseln neu gestartet (SSC = 0)", null, "9303-11 6.2.2 / 9.8.2");
+        log.Detail(LogCategory.Crypto, T("Comp(PK_PCD) für Terminal Authentication", "Comp(PK_PCD) for Terminal Authentication"), comp, "TR-03110-3 A.2.2.3");
+        log.Info(LogCategory.Protocol, T("Chip Authentication erfolgreich – Secure Messaging mit neuen Sitzungsschlüsseln neu gestartet (SSC = 0)", "Chip Authentication successful – secure messaging restarted with new session keys (SSC = 0)"), null, "9303-11 6.2.2 / 9.8.2");
         var sm = new SecureChannel(channel.Inner, keyType, ksEnc, ksMac, new byte[SymmetricCrypto.BlockSize(Kdf.Algorithm(keyType))], "Chip Authentication");
         return new ChipAuthenticationResult(sm, eph.PublicKey, comp, caOid);
     }

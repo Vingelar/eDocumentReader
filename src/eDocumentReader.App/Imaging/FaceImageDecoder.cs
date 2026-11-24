@@ -13,15 +13,15 @@ public static class FaceImageDecoder
     {
         FaceImageDataType.Jpeg => DecodeJpeg(face.ImageData),
         FaceImageDataType.Jpeg2000 => DecodeJpeg2000(face.ImageData),
-        _ => throw new NotSupportedException("Unbekanntes Bildformat."),
+        _ => throw new NotSupportedException(T("Unbekanntes Bildformat.", "Unknown image format.")),
     };
 
     /// <summary>Raw image data with format detection (JPEG / JPEG 2000), e.g. IDL DG4 '5F40' or DG5 '5F43'.</summary>
     public static BitmapSource DecodeAny(byte[] data) => Idl.ImageFormat(data) switch
     {
         "JPEG" => DecodeJpeg(data),
-        "unbekannt" => throw new NotSupportedException("Unbekanntes Bildformat."),
-        _ => DecodeJpeg2000(data),
+        var f when Idl.IsKnownImageFormat(f) => DecodeJpeg2000(data),
+        _ => throw new NotSupportedException(T("Unbekanntes Bildformat.", "Unknown image format.")),
     };
 
     private static BitmapSource DecodeJpeg(byte[] data)

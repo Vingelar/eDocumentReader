@@ -11,7 +11,7 @@ namespace eDocumentReader.App.ViewModels;
 /// <summary>PKI tab: import of CSCA/DS/CRL/Master Lists, CV certificates and terminal keys; overview of the store.</summary>
 public sealed partial class MainViewModel
 {
-    [ObservableProperty] private string pkiSummary = "PKI-Speicher noch nicht geladen – „Aktualisieren“ oder „Importieren…“.";
+    [ObservableProperty] private string pkiSummary = T("PKI-Speicher noch nicht geladen – „Aktualisieren“ oder „Importieren…“.", "PKI store not loaded yet – 'Refresh' or 'Import…'.");
     [ObservableProperty] private string pkiImportLog = string.Empty;
     [ObservableProperty, NotifyCanExecuteChangedFor(nameof(ImportPkiCommand), nameof(RefreshPkiCommand))] private bool isPkiBusy;
 
@@ -22,13 +22,17 @@ public sealed partial class MainViewModel
     {
         var dlg = new Microsoft.Win32.OpenFileDialog
         {
-            Title = "PKI-Dateien importieren",
+            Title = T("PKI-Dateien importieren", "Import PKI files"),
             Multiselect = true,
-            Filter = "Alle unterstützten Dateien|*.cvcert;*.cvc;*.bin;*.der;*.cer;*.crt;*.pem;*.pkcs8;*.p8;*.key;*.ml;*.crl|" +
+            Filter = T("Alle unterstützten Dateien|*.cvcert;*.cvc;*.bin;*.der;*.cer;*.crt;*.pem;*.pkcs8;*.p8;*.key;*.ml;*.crl|" +
                      "CV-Zertifikate (*.cvcert;*.cvc;*.bin)|*.cvcert;*.cvc;*.bin|" +
                      "Private Schlüssel (*.pkcs8;*.p8;*.key;*.pem;*.der)|*.pkcs8;*.p8;*.key;*.pem;*.der|" +
                      "X.509 / Master List / CRL (*.cer;*.crt;*.der;*.pem;*.ml;*.crl)|*.cer;*.crt;*.der;*.pem;*.ml;*.crl|" +
-                     "Alle Dateien (*.*)|*.*",
+                     "Alle Dateien (*.*)|*.*", "All supported files|*.cvcert;*.cvc;*.bin;*.der;*.cer;*.crt;*.pem;*.pkcs8;*.p8;*.key;*.ml;*.crl|" +
+                     "CV certificates (*.cvcert;*.cvc;*.bin)|*.cvcert;*.cvc;*.bin|" +
+                     "Private keys (*.pkcs8;*.p8;*.key;*.pem;*.der)|*.pkcs8;*.p8;*.key;*.pem;*.der|" +
+                     "X.509 / Master List / CRL (*.cer;*.crt;*.der;*.pem;*.ml;*.crl)|*.cer;*.crt;*.der;*.pem;*.ml;*.crl|" +
+                     "All files (*.*)|*.*"),
         };
         if (dlg.ShowDialog() != true) return;
         IsPkiBusy = true;
@@ -44,7 +48,7 @@ public sealed partial class MainViewModel
                     try
                     {
                         var results = pki.Import(f);
-                        if (results.Count == 0) log.Add($"✘ {Path.GetFileName(f)}: Dateityp nicht erkannt");
+                        if (results.Count == 0) log.Add(T($"✘ {Path.GetFileName(f)}: Dateityp nicht erkannt", $"✘ {Path.GetFileName(f)}: file type not recognized"));
                         foreach (var r in results) log.Add($"✔ {Path.GetFileName(f)} → {r.Kind}: {r.Description}");
                     }
                     catch (Exception ex) { log.Add($"✘ {Path.GetFileName(f)}: {ex.Message}"); }
@@ -54,9 +58,9 @@ public sealed partial class MainViewModel
                 return log;
             });
             PkiImportLog = string.Join(Environment.NewLine, lines);
-            foreach (var l in lines) Logger.Info(LogCategory.Application, "PKI-Import: " + l);
+            foreach (var l in lines) Logger.Info(LogCategory.Application, T("PKI-Import: ", "PKI import: ") + l);
             PkiSummary = BuildPkiSummary(pki!);
-            StatusText = $"PKI-Import: {lines.Count(l => l.StartsWith('✔'))} von {files.Length} Datei(en) übernommen";
+            StatusText = T($"PKI-Import: {lines.Count(l => l.StartsWith('✔'))} von {files.Length} Datei(en) übernommen", $"PKI import: {lines.Count(l => l.StartsWith('✔'))} of {files.Length} file(s) imported");
         }
         finally { IsPkiBusy = false; }
     }
@@ -79,31 +83,31 @@ public sealed partial class MainViewModel
     private static string BuildPkiSummary(PkiStore store)
     {
         var sb = new StringBuilder();
-        sb.AppendLine($"Speicherort: {store.Root}");
-        sb.AppendLine($"{store.Cscas.Count} CSCA, {store.DocumentSigners.Count} DS, {store.Crls.Count} CRL, {store.CvCertificates.Count} CV-Zertifikate, {store.PrivateKeys.Count} private Schlüssel");
+        sb.AppendLine(T($"Speicherort: {store.Root}", $"Location: {store.Root}"));
+        sb.AppendLine(T($"{store.Cscas.Count} CSCA, {store.DocumentSigners.Count} DS, {store.Crls.Count} CRL, {store.CvCertificates.Count} CV-Zertifikate, {store.PrivateKeys.Count} private Schlüssel", $"{store.Cscas.Count} CSCA, {store.DocumentSigners.Count} DS, {store.Crls.Count} CRL, {store.CvCertificates.Count} CV certificates, {store.PrivateKeys.Count} private keys"));
         sb.AppendLine();
 
-        sb.AppendLine("=== Terminal Authentication: Ketten (TR-03110-3, ISO/IEC 18013-3 EAP) ===");
+        sb.AppendLine(T("=== Terminal Authentication: Ketten (TR-03110-3, ISO/IEC 18013-3 EAP) ===", "=== Terminal Authentication: chains (TR-03110-3, ISO/IEC 18013-3 EAP) ==="));
         var terminals = store.TerminalCredentials();
-        if (terminals.Count == 0) sb.AppendLine("  keine Terminal-Credentials (Terminalzertifikat + passender privater Schlüssel)");
+        if (terminals.Count == 0) sb.AppendLine(T("  keine Terminal-Credentials (Terminalzertifikat + passender privater Schlüssel)", "  no terminal credentials (terminal certificate + matching private key)"));
         foreach (var t in terminals)
         {
-            sb.AppendLine($"  Terminal {t.Certificate.Chr} ({t.Certificate.TerminalType}), gültig bis {t.Certificate.ExpirationDate:yyyy-MM-dd}");
+            sb.AppendLine(T($"  Terminal {t.Certificate.Chr} ({t.Certificate.TerminalType}), gültig bis {t.Certificate.ExpirationDate:yyyy-MM-dd}", $"  Terminal {t.Certificate.Chr} ({t.Certificate.TerminalType}), valid until {t.Certificate.ExpirationDate:yyyy-MM-dd}"));
             foreach (var line in store.VerifyCvChain(t.Certificate)) sb.AppendLine("    " + line);
         }
         var keysWithoutCert = store.PrivateKeys.Count - terminals.Count;
-        if (keysWithoutCert > 0) sb.AppendLine($"  ⚠ {keysWithoutCert} privater Schlüssel ohne passendes Terminalzertifikat");
+        if (keysWithoutCert > 0) sb.AppendLine(T($"  ⚠ {keysWithoutCert} privater Schlüssel ohne passendes Terminalzertifikat", $"  ⚠ {keysWithoutCert} private key(s) without matching terminal certificate"));
         var anchors = store.CandidateTrustPoints();
-        sb.AppendLine($"  Vertrauensanker (CVCA) für Chips ohne EF.CVCA: {(anchors.Count > 0 ? string.Join(", ", anchors) : "keine")}");
+        sb.AppendLine(T($"  Vertrauensanker (CVCA) für Chips ohne EF.CVCA: {(anchors.Count > 0 ? string.Join(", ", anchors) : "keine")}", $"  Trust points (CVCA) for chips without EF.CVCA: {(anchors.Count > 0 ? string.Join(", ", anchors) : "none")}"));
         sb.AppendLine();
 
-        sb.AppendLine("=== CV-Zertifikate ===");
+        sb.AppendLine(T("=== CV-Zertifikate ===", "=== CV certificates ==="));
         foreach (var c in store.CvCertificates.OrderBy(c => c.Role == CvRole.Cvca ? 0 : c.Role == CvRole.InspectionSystemOrTerminal ? 2 : 1).ThenBy(c => c.Chr))
             sb.AppendLine("  " + c.Describe());
         if (store.Errors.Count > 0)
         {
             sb.AppendLine();
-            sb.AppendLine("=== Fehler beim Laden ===");
+            sb.AppendLine(T("=== Fehler beim Laden ===", "=== Errors while loading ==="));
             foreach (var e in store.Errors) sb.AppendLine("  ✘ " + e);
         }
         return sb.ToString();

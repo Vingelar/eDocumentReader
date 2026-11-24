@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
     <ProjectReference Include="..\eDocumentReader.Core\eDocumentReader.Core.csproj" />
@@ -16,5 +16,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Using Include="eDocumentReader.Core.Localization.Loc" Static="true" />
+  </ItemGroup>
 
 </Project>

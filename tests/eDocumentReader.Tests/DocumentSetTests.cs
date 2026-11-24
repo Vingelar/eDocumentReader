@@ -17,7 +17,7 @@ public class DocumentSetTests
         r.Files.Add(new EmrtdFile("EF.CVCA", 0x1C, 0, [0x42, 1, 0x41]));    // not part of the format
         r.DataGroups[1] = r.Files[1].Data;
         r.DataGroupsListed.AddRange([1, 2]);
-        r.Steps.Add(new ReadStep("Lesen EF.DG2", StepOutcome.Failed, "EF.DG2: 6982 Sicherheitszustand nicht erfüllt"));
+        r.Steps.Add(ReadStep.ReadFailed("EF.DG2", "EF.DG2: 6982 Sicherheitszustand nicht erfüllt"));
         r.Steps.Add(new ReadStep("Chip Authentication", StepOutcome.Success, ""));
         return r;
     }

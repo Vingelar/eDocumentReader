@@ -28,7 +28,7 @@ public static class SymmetricCrypto
     {
         var i = data.Length - 1;
         while (i >= 0 && data[i] == 0x00) i--;
-        if (i < 0 || data[i] != 0x80) throw new System.Security.Cryptography.CryptographicException("UngÃ¼ltiges Padding (ISO/IEC 9797-1 Methode 2).");
+        if (i < 0 || data[i] != 0x80) throw new System.Security.Cryptography.CryptographicException(T("Ungültiges Padding (ISO/IEC 9797-1 Methode 2).", "Invalid padding (ISO/IEC 9797-1 method 2)."));
         return data[..i].ToArray();
     }
 
@@ -40,7 +40,7 @@ public static class SymmetricCrypto
     private static byte[] Cbc(CipherAlgorithm algorithm, byte[] key, byte[] iv, byte[] data, bool encrypt)
     {
         var bs = BlockSize(algorithm);
-        if (data.Length % bs != 0) throw new System.Security.Cryptography.CryptographicException($"DatenlÃ¤nge {data.Length} ist kein Vielfaches der BlockgrÃ¶ÃŸe {bs}.");
+        if (data.Length % bs != 0) throw new System.Security.Cryptography.CryptographicException(T($"Datenlänge {data.Length} ist kein Vielfaches der Blockgröße {bs}.", $"Data length {data.Length} is not a multiple of the block size {bs}."));
         var cipher = new CbcBlockCipher(Engine(algorithm));
         cipher.Init(encrypt, new ParametersWithIV(new KeyParameter(key), iv));
         var output = new byte[data.Length];

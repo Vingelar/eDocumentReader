@@ -35,7 +35,7 @@ public sealed partial class MainViewModel
     private void SaveSet()
     {
         if (setSource == null) return;
-        var dlg = new Microsoft.Win32.OpenFolderDialog { Title = "Übergeordneten Ordner für den Datensatz wählen" };
+        var dlg = new Microsoft.Win32.OpenFolderDialog { Title = T("Übergeordneten Ordner für den Datensatz wählen", "Choose the parent folder for the data set") };
         if (dlg.ShowDialog() != true) return;
         try
         {
@@ -45,13 +45,13 @@ public sealed partial class MainViewModel
             export.Origin.ReaderDevice = lastReaderName;
             if (lastAtr is { Length: > 0 }) export.Origin.Atr = Hex.Compact(lastAtr);
             var dir = DocumentSet.Write(export, dlg.FolderName);
-            var notRead = export.Origin.NotRead.Count > 0 ? $", nicht gelesen: {string.Join(", ", export.Origin.NotRead.Keys)}" : "";
-            StatusText = $"Datensatz ({export.DocumentType.ToString().ToUpperInvariant()}, {export.Files.Count} Dateien{notRead}) gespeichert in {dir}";
-            Logger.Info(LogCategory.Application, $"Datensatz gespeichert: {export.Files.Count} EF-Dateien, project.json (Schema {DocumentSet.SchemaVersion})");
+            var notRead = export.Origin.NotRead.Count > 0 ? T($", nicht gelesen: {string.Join(", ", export.Origin.NotRead.Keys)}", $", not read: {string.Join(", ", export.Origin.NotRead.Keys)}") : "";
+            StatusText = T($"Datensatz ({export.DocumentType.ToString().ToUpperInvariant()}, {export.Files.Count} Dateien{notRead}) gespeichert in {dir}", $"Data set ({export.DocumentType.ToString().ToUpperInvariant()}, {export.Files.Count} files{notRead}) saved in {dir}");
+            Logger.Info(LogCategory.Application, T($"Datensatz gespeichert: {export.Files.Count} EF-Dateien, project.json (Schema {DocumentSet.SchemaVersion})", $"Data set saved: {export.Files.Count} EF files, project.json (schema {DocumentSet.SchemaVersion})"));
         }
         catch (Exception ex)
         {
-            StatusText = $"Datensatz nicht gespeichert: {ex.Message}";
+            StatusText = T($"Datensatz nicht gespeichert: {ex.Message}", $"Data set not saved: {ex.Message}");
             Logger.Error(LogCategory.Application, StatusText);
         }
     }
@@ -65,9 +65,9 @@ public sealed partial class MainViewModel
         if (SelectedFileNode?.File is not { } file) return;
         var dlg = new Microsoft.Win32.SaveFileDialog
         {
-            Title = "EF-Datei speichern",
+            Title = T("EF-Datei speichern", "Save EF file"),
             FileName = DocumentSet.SingleFileName(file),
-            Filter = "Binärdatei (*.bin)|*.bin|Alle Dateien (*.*)|*.*",
+            Filter = T("Binärdatei (*.bin)|*.bin|Alle Dateien (*.*)|*.*", "Binary file (*.bin)|*.bin|All files (*.*)|*.*"),
         };
         if (dlg.ShowDialog() != true) return;
         var data = file.Data;
@@ -75,6 +75,6 @@ public sealed partial class MainViewModel
         if (lastDocumentType != SetDocumentType.Evrc)
             (data, note) = DocumentSet.TrimToTlv(DocumentSet.ExportName(file) ?? file.Name, file.Data, lastSod, file.DataGroup);
         File.WriteAllBytes(dlg.FileName, data);
-        StatusText = $"{Path.GetFileName(dlg.FileName)} gespeichert ({data.Length} Byte){(note != null ? " – " + note : "")}";
+        StatusText = T($"{Path.GetFileName(dlg.FileName)} gespeichert ({data.Length} Byte){(note != null ? " – " + note : "")}", $"{Path.GetFileName(dlg.FileName)} saved ({data.Length} bytes){(note != null ? " – " + note : "")}");
     }
 }

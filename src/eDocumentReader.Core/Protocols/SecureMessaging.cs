@@ -40,7 +40,7 @@ public sealed class SecureChannel : IApduChannel
         this.ksEnc = ksEnc;
         this.ksMac = ksMac;
         ssc = (byte[])initialSsc.Clone();
-        if (ssc.Length != SymmetricCrypto.BlockSize(Algorithm)) throw new ArgumentException("SSC-Länge muss der Blockgröße entsprechen (9303-11 9.8.2).");
+        if (ssc.Length != SymmetricCrypto.BlockSize(Algorithm)) throw new ArgumentException(T("SSC-Länge muss der Blockgröße entsprechen (9303-11 9.8.2).", "SSC length must equal the block size (9303-11 9.8.2)."));
         EstablishedBy = establishedBy;
     }
 
@@ -61,14 +61,14 @@ public sealed class SecureChannel : IApduChannel
     {
         var input = SymmetricCrypto.Pad([.. ssc, .. data], BlockSize);
         var mac = SymmetricCrypto.Mac(Algorithm, ksMac, input);
-        Logger.Trace(LogCategory.SecureMessaging, "MAC-Eingabe (SSC || Daten, gepaddet)", input, Ref);
+        Logger.Trace(LogCategory.SecureMessaging, T("MAC-Eingabe (SSC || Daten, gepaddet)", "MAC input (SSC || data, padded)"), input, Ref);
         return mac;
     }
 
     /// <summary>Builds the protected command APDU (9303-11 9.8.4, Figure 5). Increments the SSC.</summary>
     public CommandApdu Protect(CommandApdu plain)
     {
-        if ((plain.Cla & 0x80) != 0) throw new SecureMessagingException("SM für proprietäre Klassenbytes nicht definiert.");
+        if ((plain.Cla & 0x80) != 0) throw new SecureMessagingException(T("SM für proprietäre Klassenbytes nicht definiert.", "SM is not defined for proprietary class bytes."));
         // 9303-11 9.8.2: SSC is incremented before each command; the AES IV uses this incremented value.
         IncrementSsc();
         var cla = (byte)(plain.Cla | 0x0C);
@@ -91,7 +91,7 @@ public sealed class SecureChannel : IApduChannel
         }
         var mac = ComputeMac([.. header, .. dataObjects]);
         dataObjects.AddRange(BerTlv.Encode(0x8E, mac));
-        Logger.Detail(LogCategory.SecureMessaging, $"SSC={Hex.Compact(ssc)} MAC(Kommando)", mac, Ref);
+        Logger.Detail(LogCategory.SecureMessaging, T($"SSC={Hex.Compact(ssc)} MAC(Kommando)", $"SSC={Hex.Compact(ssc)} MAC(command)"), mac, Ref);
         var extended = plain.IsExtended || dataObjects.Count > 255;
         return new CommandApdu(cla, plain.Ins, plain.P1, plain.P2, [.. dataObjects], extended ? 65536 : 256, extended);
     }
@@ -107,7 +107,7 @@ public sealed class SecureChannel : IApduChannel
         if (do8E == null)
         {
             IsActive = false;
-            throw new SecureMessagingException($"Antwort ohne SM-Datenobjekt '8E' (SW {protectedResponse.Status} {protectedResponse.Status.Description}) – SM-Sitzung vom Chip beendet (9303-11 9.8.5).", protectedResponse.Status);
+            throw new SecureMessagingException(T($"Antwort ohne SM-Datenobjekt '8E' (SW {protectedResponse.Status} {protectedResponse.Status.Description}) – SM-Sitzung vom Chip beendet (9303-11 9.8.5).", $"Response without SM data object '8E' (SW {protectedResponse.Status} {protectedResponse.Status.Description}) – SM session ended by the chip (9303-11 9.8.5)."), protectedResponse.Status);
         }
         var macInput = new List<byte>();
         foreach (var o in objects.Where(o => o.Tag != 0x8E)) macInput.AddRange(o.Encode());
@@ -115,15 +115,15 @@ public sealed class SecureChannel : IApduChannel
         if (!expected.AsSpan().SequenceEqual(do8E.Value))
         {
             IsActive = false;
-            throw new SecureMessagingException($"MAC der Antwort ungültig: erhalten {Hex.Compact(do8E.Value)}, berechnet {Hex.Compact(expected)} (SSC {Hex.Compact(ssc)}).", protectedResponse.Status);
+            throw new SecureMessagingException(T($"MAC der Antwort ungültig: erhalten {Hex.Compact(do8E.Value)}, berechnet {Hex.Compact(expected)} (SSC {Hex.Compact(ssc)}).", $"Response MAC invalid: received {Hex.Compact(do8E.Value)}, computed {Hex.Compact(expected)} (SSC {Hex.Compact(ssc)})."), protectedResponse.Status);
         }
-        Logger.Detail(LogCategory.SecureMessaging, $"SSC={Hex.Compact(ssc)} MAC(Antwort) korrekt", expected, Ref);
+        Logger.Detail(LogCategory.SecureMessaging, T($"SSC={Hex.Compact(ssc)} MAC(Antwort) korrekt", $"SSC={Hex.Compact(ssc)} MAC(response) correct"), expected, Ref);
 
         var data = Array.Empty<byte>();
         if (do87 != null)
         {
             var cryptogram = do87.Tag == 0x87 ? do87.Value[1..] : do87.Value;
-            if (do87.Tag == 0x87 && do87.Value[0] != 0x01) Logger.Warning(LogCategory.SecureMessaging, $"DO'87' Padding-Indikator {do87.Value[0]:X2} ≠ 01", null, Ref);
+            if (do87.Tag == 0x87 && do87.Value[0] != 0x01) Logger.Warning(LogCategory.SecureMessaging, T($"DO'87' Padding-Indikator {do87.Value[0]:X2} ≠ 01", $"DO'87' padding indicator {do87.Value[0]:X2} ≠ 01"), null, Ref);
             data = SymmetricCrypto.Unpad(SymmetricCrypto.CbcDecrypt(Algorithm, ksEnc, Iv(), cryptogram));
         }
         StatusWord status;
@@ -131,26 +131,26 @@ public sealed class SecureChannel : IApduChannel
         {
             status = new StatusWord(do99.Value[0], do99.Value[1]);
             if (status != protectedResponse.Status)
-                Logger.Warning(LogCategory.SecureMessaging, $"SW in DO'99' ({status}) ≠ SW der Antwort ({protectedResponse.Status})", null, Ref);
+                Logger.Warning(LogCategory.SecureMessaging, T($"SW in DO'99' ({status}) ≠ SW der Antwort ({protectedResponse.Status})", $"SW in DO'99' ({status}) ≠ SW of the response ({protectedResponse.Status})"), null, Ref);
         }
         else
         {
             status = protectedResponse.Status;
-            Logger.Warning(LogCategory.SecureMessaging, "DO'99' fehlt in der geschützten Antwort", null, Ref);
+            Logger.Warning(LogCategory.SecureMessaging, T("DO'99' fehlt in der geschützten Antwort", "DO'99' missing in the protected response"), null, Ref);
         }
         return new ResponseApdu(data, status);
     }
 
     public ResponseApdu Transmit(CommandApdu command, string? label = null)
     {
-        if (!IsActive) throw new SecureMessagingException("SM-Sitzung ist nicht mehr aktiv.");
+        if (!IsActive) throw new SecureMessagingException(T("SM-Sitzung ist nicht mehr aktiv.", "SM session is no longer active."));
         var name = label ?? CardChannel.DescribeCommand(command.ToBytes());
-        Logger.Write(new LogEntry(DateTimeOffset.Now, LogCategory.SecureMessaging, LogLevel.Info, $"{name} (ungeschützt)", command.ToBytes(), ApduDirection.Command));
+        Logger.Write(new LogEntry(DateTimeOffset.Now, LogCategory.SecureMessaging, LogLevel.Info, T($"{name} (ungeschützt)", $"{name} (unprotected)"), command.ToBytes(), ApduDirection.Command));
         var protectedCommand = Protect(command);
         var raw = inner.Transmit(protectedCommand, "SM " + name);
         var plain = Unprotect(raw);
         Logger.Write(new LogEntry(DateTimeOffset.Now, LogCategory.SecureMessaging, plain.Status.IsCompleted ? LogLevel.Info : LogLevel.Warning,
-            $"{plain.Status} {plain.Status.Description} (entschlüsselt)", plain.ToBytes(), ApduDirection.Response));
+            T($"{plain.Status} {plain.Status.Description} (entschlüsselt)", $"{plain.Status} {plain.Status.Description} (decrypted)"), plain.ToBytes(), ApduDirection.Response));
         return plain;
     }
 }
