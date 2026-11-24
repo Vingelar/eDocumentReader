@@ -1,0 +1,19 @@
+# Build output
+bin/
+obj/
+.vs/
+*.user
+*.suo
+TestResults/
+
+# Third-party standards stay local; only the test data the unit tests read is tracked
+docs/standards-text/
+docs/standards/*
+!docs/standards/TR-03110_EAC-Worked-Example/
+docs/standards/TR-03110_EAC-Worked-Example/*
+!docs/standards/TR-03110_EAC-Worked-Example/Certificates/
+!docs/standards/TR-03105-5_ReferenceDataSet/
+docs/standards/TR-03105-5_ReferenceDataSet/*
+!docs/standards/TR-03105-5_ReferenceDataSet/referenceDataSet/
+
+Thumbs.db

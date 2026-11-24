@@ -1,0 +1,217 @@
+using System.Collections.ObjectModel;
+using System.IO;
+using System.Text;
+using System.Windows;
+using System.Windows.Threading;
+using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
+using eDocumentReader.Core.Apdu;
+using eDocumentReader.Core.Logging;
+using eDocumentReader.Core.Transport;
+using eDocumentReader.Core.Transport.Pcsc;
+using eDocumentReader.Core.Util;
+
+namespace eDocumentReader.App.ViewModels;
+
+public sealed partial class ReaderItem : ObservableObject
+{
+    public ReaderItem(string name) => Name = name;
+    public string Name { get; }
+    [ObservableProperty] private bool cardPresent;
+    [ObservableProperty] private string atr = string.Empty;
+    public string Display => Name;
+}
+
+public sealed partial class LogLevelSetting : ObservableObject
+{
+    private readonly Logger logger;
+    public LogLevelSetting(Logger logger, LogCategory category)
+    {
+        this.logger = logger;
+        Category = category;
+        level = logger[category];
+    }
+    public LogCategory Category { get; }
+    [ObservableProperty] private LogLevel level;
+    partial void OnLevelChanged(LogLevel value) => logger[Category] = value;
+}
+
+public sealed partial class MainViewModel : ObservableObject, IDisposable
+{
+    private readonly Dispatcher dispatcher = Application.Current.Dispatcher;
+    private readonly ReaderMonitor monitor = new();
+    private PcscTransport? transport;
+
+    public Logger Logger { get; } = new(LogLevel.Detail);
+    public MemoryLogSink LogSink { get; } = new();
+    public ObservableCollection<ReaderItem> Readers { get; } = [];
+    public ObservableCollection<LogEntry> LogEntries { get; } = [];
+    public ObservableCollection<LogLevelSetting> LogLevels { get; } = [];
+    public IReadOnlyList<LogLevel> AvailableLevels { get; } = Enum.GetValues<LogLevel>();
+    public CardChannel? Channel { get; private set; }
+
+    [ObservableProperty, NotifyCanExecuteChangedFor(nameof(ConnectCommand), nameof(ReadDocumentCommand), nameof(ReadEvrcCommand))] private ReaderItem? selectedReader;
+    [ObservableProperty, NotifyCanExecuteChangedFor(nameof(ConnectCommand), nameof(DisconnectCommand), nameof(SendApduCommand))] private bool isConnected;
+    [ObservableProperty] private string statusText = "Bereit";
+    [ObservableProperty] private string cardInfo = string.Empty;
+    [ObservableProperty] private string apduInput = "00 A4 04 0C 07 A0 00 00 02 47 10 01";
+    [ObservableProperty] private string apduOutput = string.Empty;
+    [ObservableProperty] private bool exclusiveMode = true;
+    [ObservableProperty] private bool autoGetResponse = true;
+
+    public MainViewModel()
+    {
+        Logger.AddSink(LogSink);
+        LogSink.EntryAdded += e => dispatcher.BeginInvoke(() =>
+        {
+            LogEntries.Add(e);
+            if (LogEntries.Count > 20000) LogEntries.RemoveAt(0);
+        });
+        foreach (var c in Enum.GetValues<LogCategory>()) LogLevels.Add(new LogLevelSetting(Logger, c));
+        monitor.Changed += states => dispatcher.BeginInvoke(() => UpdateReaders(states));
+        monitor.Failed += ex => dispatcher.BeginInvoke(() => Logger.Error(LogCategory.Reader, $"Lesermonitor: {ex.Message}"));
+        monitor.Start();
+        Logger.Info(LogCategory.Application, "eDocumentReader gestartet");
+    }
+
+    private void UpdateReaders(IReadOnlyList<ReaderState> states)
+    {
+        foreach (var gone in Readers.Where(r => states.All(s => s.Name != r.Name)).ToList())
+        {
+            Readers.Remove(gone);
+            Logger.Info(LogCategory.Reader, $"Leser entfernt: {gone.Name}");
+        }
+        foreach (var s in states)
+        {
+            var item = Readers.FirstOrDefault(r => r.Name == s.Name);
+            if (item == null)
+            {
+                item = new ReaderItem(s.Name);
+                Readers.Add(item);
+                Logger.Info(LogCategory.Reader, $"Leser gefunden: {s.Name}");
+            }
+            if (item.CardPresent != s.CardPresent)
+                Logger.Info(LogCategory.Reader, s.CardPresent ? $"Karte aufgelegt/gesteckt: {s.Name}" : $"Karte entfernt: {s.Name}", s.CardPresent ? s.Atr : null);
+            item.CardPresent = s.CardPresent;
+            item.Atr = Hex.Of(s.Atr);
+            // While reading, the running inspection fails on its own; disposing the handle under it would hide the real error.
+            if (!s.CardPresent && IsConnected && !IsReading && transport?.Name == s.Name) Disconnect();
+        }
+        SelectedReader ??= Readers.FirstOrDefault(r => r.CardPresent) ?? Readers.FirstOrDefault();
+    }
+
+    private bool CanConnect() => SelectedReader != null && !IsConnected && !IsReading;
+
+    private bool CanDisconnect() => IsConnected && !IsReading;
+
+    [RelayCommand(CanExecute = nameof(CanConnect))]
+    private void Connect()
+    {
+        if (SelectedReader == null) return;
+        try
+        {
+            transport = new PcscTransport(SelectedReader.Name, ExclusiveMode ? ShareMode.Exclusive : ShareMode.Shared);
+            Channel = new CardChannel(transport, Logger, new ChannelOptions { AutoGetResponse = AutoGetResponse, AutoCorrectLe = AutoGetResponse });
+            IsConnected = true;
+            Logger.Info(LogCategory.Reader, $"Verbunden mit {transport.Name}, Protokoll {transport.Protocol}, Schnittstelle {transport.Interface}", transport.Atr);
+            CardInfo = BuildCardInfo(transport, Channel);
+            StatusText = $"Verbunden: {transport.Name} ({transport.Interface}, {transport.Protocol})";
+        }
+        catch (Exception ex)
+        {
+            transport?.Dispose();
+            transport = null;
+            Logger.Error(LogCategory.Reader, $"Verbindung fehlgeschlagen: {ex.Message}");
+            StatusText = ex.Message;
+        }
+    }
+
+    private static string BuildCardInfo(PcscTransport t, CardChannel channel)
+    {
+        var sb = new StringBuilder();
+        var atr = new AtrInfo(t.Atr);
+        sb.AppendLine($"Leser: {t.Name}");
+        sb.AppendLine($"Protokoll: {t.Protocol}   Schnittstelle: {(t.Interface == CardInterface.Contactless ? "kontaktlos (ISO/IEC 14443)" : "kontaktbehaftet (ISO/IEC 7816-3)")}");
+        sb.AppendLine();
+        sb.AppendLine(atr.Describe());
+        if (t.Interface == CardInterface.Contactless)
+        {
+            var uid = channel.GetContactlessData(historicalBytes: false);
+            sb.AppendLine($"UID/PUPI: {(uid == null ? "nicht verfügbar" : Hex.Of(uid))}{(uid is { Length: 4 } && uid[0] == 0x08 ? " (zufällige UID, ISO/IEC 14443-3)" : string.Empty)}");
+            var hist = channel.GetContactlessData(historicalBytes: true);
+            if (hist != null) sb.AppendLine($"ATS hist. Bytes (GET DATA P1=01): {Hex.Of(hist)}");
+            sb.AppendLine();
+        }
+        var features = ReaderFeatures.Query(t);
+        sb.AppendLine("PC/SC Part 10 Features:");
+        if (features.ControlCodes.Count == 0) sb.AppendLine("  keine (Klasse-1-Leser oder Treiber ohne Part 10)");
+        foreach (var (tag, code) in features.ControlCodes) sb.AppendLine($"  {ReaderFeatures.FeatureName(tag)} → 0x{code:X8}");
+        if (features.MaxApduDataSize is { } max) sb.AppendLine($"  dwMaxAPDUDataSize: {max} ({(max == 0 ? "nur kurze APDUs" : "Extended Length bis " + max + " Bytes")})");
+        if (features.FirmwareId is { } fw) sb.AppendLine($"  Firmware: {fw}");
+        if (features.UsbVendorId is { } vid) sb.AppendLine($"  USB VID/PID: {vid:X4}/{features.UsbProductId:X4}");
+        sb.AppendLine($"  PACE im Leser: {(features.SupportsPace ? "ja" : "nein")}");
+        return sb.ToString();
+    }
+
+    [RelayCommand(CanExecute = nameof(CanDisconnect))]
+    private void Disconnect()
+    {
+        transport?.Dispose();
+        transport = null;
+        Channel = null;
+        IsConnected = false;
+        StatusText = "Getrennt";
+        Logger.Info(LogCategory.Reader, "Verbindung getrennt");
+    }
+
+    [RelayCommand]
+    private void Reset()
+    {
+        if (transport == null) return;
+        try
+        {
+            transport.Reset(cold: false);
+            Logger.Info(LogCategory.Reader, "Warm-Reset durchgeführt", transport.Atr);
+        }
+        catch (Exception ex) { Logger.Error(LogCategory.Reader, $"Reset fehlgeschlagen: {ex.Message}"); }
+    }
+
+    [RelayCommand(CanExecute = nameof(IsConnected))]
+    private void SendApdu()
+    {
+        if (Channel == null) return;
+        try
+        {
+            var bytes = Hex.Parse(ApduInput);
+            var command = CommandApdu.Parse(bytes);
+            Channel.Options.AutoGetResponse = AutoGetResponse;
+            Channel.Options.AutoCorrectLe = AutoGetResponse;
+            var response = Channel.Transmit(command);
+            ApduOutput = $">> {Hex.Of(bytes)}{Environment.NewLine}<< {response}{Environment.NewLine}   {response.Status.Description}{Environment.NewLine}{Environment.NewLine}" + ApduOutput;
+        }
+        catch (Exception ex)
+        {
+            ApduOutput = $"Fehler: {ex.Message}{Environment.NewLine}" + ApduOutput;
+        }
+    }
+
+    [RelayCommand]
+    private void ClearLog()
+    {
+        LogSink.Clear();
+        LogEntries.Clear();
+    }
+
+    [RelayCommand]
+    private void SaveLog()
+    {
+        var dlg = new Microsoft.Win32.SaveFileDialog { Filter = "Textdatei|*.txt", FileName = $"eDocumentReader_{DateTime.Now:yyyyMMdd_HHmmss}.log.txt" };
+        if (dlg.ShowDialog() == true) File.WriteAllText(dlg.FileName, LogSink.ToText(), Encoding.UTF8);
+    }
+
+    public void Dispose()
+    {
+        monitor.Dispose();
+        transport?.Dispose();
+    }
+}

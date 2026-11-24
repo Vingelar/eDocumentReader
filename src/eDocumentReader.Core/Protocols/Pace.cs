@@ -1,0 +1,196 @@
+using System.Security.Cryptography;
+using System.Text;
+using eDocumentReader.Core.Apdu;
+using eDocumentReader.Core.Crypto;
+using eDocumentReader.Core.Logging;
+using eDocumentReader.Core.Tlv;
+using eDocumentReader.Core.Transport;
+using eDocumentReader.Core.Util;
+using Org.BouncyCastle.Asn1;
+using Org.BouncyCastle.Asn1.X9;
+using Org.BouncyCastle.Math;
+using Org.BouncyCastle.Math.EC;
+using Org.BouncyCastle.Security;
+using ECCurve = Org.BouncyCastle.Math.EC.ECCurve;
+using ECPoint = Org.BouncyCastle.Math.EC.ECPoint;
+
+namespace eDocumentReader.Core.Protocols;
+
+/// <summary>Password reference for MSE:Set AT, ICAO 9303-11 Table 9 (TR-03110-3 D.2.1.1).</summary>
+public enum PacePasswordType : byte { Mrz = 1, Can = 2, Pin = 3, Puk = 4 }
+
+public sealed record PacePassword(PacePasswordType Type, string Value)
+{
+    public static PacePassword FromMrz(string mrzInformation) => new(PacePasswordType.Mrz, mrzInformation);
+    public static PacePassword FromCan(string can) => new(PacePasswordType.Can, can);
+
+    /// <summary>f(π): SHA-1(MRZ_information) for MRZ, ISO 8859-1 encoding otherwise (9303-11 4.4.4 / 9.7.3).</summary>
+    public byte[] Encode() => Type == PacePasswordType.Mrz
+        ? SHA1.HashData(Encoding.ASCII.GetBytes(Value))
+        : Encoding.Latin1.GetBytes(Value);
+}
+
+/// <summary>Deterministic values for tests (ICAO 9303-11 Appendix G).</summary>
+public sealed record PaceTestValues(BigInteger MapPrivateKey, BigInteger EphemeralPrivateKey);
+
+public sealed record PaceResult(SecureChannel Channel, PaceInfo Info, byte[] ChipEphemeralPublicKey, byte[]? EncryptedChipAuthenticationData)
+{
+    /// <summary>Comp(PK_eph,PICC) – ID_PICC for Terminal Authentication v1 with dynamic binding (TR-03110-1 3.5).</summary>
+    public required byte[] CompressedChipEphemeralKey { get; init; }
+    public required byte[] CompressedTerminalEphemeralKey { get; init; }
+}
+
+/// <summary>PACE according to ICAO 9303-11 clause 4.4 (APDUs 4.4.4, mapping 4.4.3.3). Currently ECDH with generic mapping.</summary>
+public static class Pace
+{
+    private const string Ref = "ICAO 9303-11 4.4";
+
+    public static PaceResult Perform(IApduChannel channel, PaceInfo info, PacePassword password, bool includeParameterId = false, PaceTestValues? test = null)
+    {
+        var log = channel.Logger;
+        var alg = info.Algorithm;
+        log.Info(LogCategory.Protocol, $"PACE: Start mit {info.Description}, Passwort {password.Type}", null, Ref);
+        if (alg.KeyAgreement != KeyAgreement.Ecdh || alg.Mapping != PaceMapping.Generic)
+            throw new NotSupportedException($"PACE-Variante {Oids.Name(info.Oid)} ist noch nicht implementiert.");
+        if (info.ParameterId is not { } paramId || !StandardizedDomainParameters.IsEc(paramId))
+            throw new NotSupportedException("Explizite Domain-Parameter (PACEDomainParameterInfo) sind noch nicht implementiert.");
+        var domain = StandardizedDomainParameters.Curve(paramId);
+        var cipher = Kdf.Algorithm(alg.KeyType);
+
+        // Kπ = KDF(f(π), 3)
+        var fpi = password.Encode();
+        var kPi = Kdf.Derive(fpi, Kdf.CounterPassword, alg.KeyType);
+        log.Detail(LogCategory.Crypto, "f(π)", fpi, "9303-11 9.7.3");
+        log.Detail(LogCategory.Crypto, "Kπ = KDF(f(π), 3)", kPi, "9303-11 9.7.3");
+
+        // MSE:Set AT (9303-11 4.4.4.1)
+        var oidBytes = new DerObjectIdentifier(info.Oid).GetEncoded()[2..];
+        var mseData = new List<byte>();
+        mseData.AddRange(BerTlv.Encode(0x80, oidBytes));
+        mseData.AddRange(BerTlv.Encode(0x83, [(byte)password.Type]));
+        if (includeParameterId) mseData.AddRange(BerTlv.Encode(0x84, [(byte)paramId]));
+        var mse = channel.Transmit(new CommandApdu(0x00, 0x22, 0xC1, 0xA4, [.. mseData]), "MSE:Set AT (PACE)");
+        if (!mse.Status.IsSuccess)
+        {
+            if (mse.Status.Sw1 == 0x63) log.Warning(LogCategory.Protocol, $"MSE:Set AT: Passwort-Fehlbedienungszähler {mse.Status.Sw2 & 0x0F}", null, "TR-03110-3 B.11.1");
+            else throw new ProtocolException($"MSE:Set AT abgelehnt: {mse.Status} {mse.Status.Description}", mse.Status);
+        }
+
+        // Step 1: encrypted nonce
+        var r1 = GeneralAuthenticate(channel, [], chained: true, "GENERAL AUTHENTICATE (1: Encrypted Nonce)");
+        var z = Expect(r1, 0x80, "Encrypted Nonce");
+        var s = SymmetricCrypto.CbcDecrypt(cipher, kPi, new byte[SymmetricCrypto.BlockSize(cipher)], z);
+        log.Detail(LogCategory.Crypto, "z (verschlüsselte Nonce)", z, Ref);
+        log.Detail(LogCategory.Crypto, "s = D(Kπ, z)", s, Ref);
+
+        // Step 2: generic mapping (9303-11 4.4.3.3.1): Ĝ = s·G + H, H = SK_map,PCD · PK_map,IC
+        var n = domain.N;
+        var skMap = test?.MapPrivateKey ?? RandomScalar(n);
+        var pkMap = domain.G.Multiply(skMap).Normalize();
+        log.Detail(LogCategory.Crypto, "SK_map,PCD", skMap.ToByteArrayUnsigned(), Ref);
+        log.Detail(LogCategory.Crypto, "PK_map,PCD", pkMap.GetEncoded(false), Ref);
+        var r2 = GeneralAuthenticate(channel, BerTlv.Encode(0x81, pkMap.GetEncoded(false)), chained: true, "GENERAL AUTHENTICATE (2: Map Nonce)");
+        var pkMapIcBytes = Expect(r2, 0x82, "Mapping Data");
+        var pkMapIc = DecodeAndValidate(domain, pkMapIcBytes, "PK_map,IC");
+        log.Detail(LogCategory.Crypto, "PK_map,IC", pkMapIcBytes, Ref);
+        var h = pkMapIc.Multiply(skMap).Normalize();
+        if (h.IsInfinity) throw new ProtocolException("PACE: H ist der Punkt im Unendlichen.");
+        var gMapped = domain.G.Multiply(new BigInteger(1, s)).Add(h).Normalize();
+        log.Detail(LogCategory.Crypto, "H = SK_map,PCD · PK_map,IC", h.GetEncoded(false), Ref);
+        log.Detail(LogCategory.Crypto, "Ĝ = s·G + H", gMapped, Ref);
+
+        // Step 3: key agreement on Ĝ
+        var skEph = test?.EphemeralPrivateKey ?? RandomScalar(n);
+        var pkEph = gMapped.Multiply(skEph).Normalize();
+        log.Detail(LogCategory.Crypto, "SK_eph,PCD", skEph.ToByteArrayUnsigned(), Ref);
+        log.Detail(LogCategory.Crypto, "PK_eph,PCD", pkEph.GetEncoded(false), Ref);
+        var r3 = GeneralAuthenticate(channel, BerTlv.Encode(0x83, pkEph.GetEncoded(false)), chained: true, "GENERAL AUTHENTICATE (3: Key Agreement)");
+        var pkEphIcBytes = Expect(r3, 0x84, "Ephemeral Public Key");
+        var pkEphIc = DecodeAndValidate(domain, pkEphIcBytes, "PK_eph,IC", gMapped.Curve);
+        log.Detail(LogCategory.Crypto, "PK_eph,IC", pkEphIcBytes, Ref);
+        // 9303-11 4.4.1 / TR-03110-2 3.2: the terminal SHALL check that PK_eph,IC ≠ PK_eph,PCD
+        if (pkEphIc.Equals(pkEph)) throw new ProtocolException("PACE: PK_eph,IC ist identisch mit PK_eph,PCD (Reflexionsangriff).");
+        var shared = pkEphIc.Multiply(skEph).Normalize();
+        var k = FieldBytes(shared.AffineXCoord.ToBigInteger(), domain);
+        log.Detail(LogCategory.Crypto, "K = x(SK_eph,PCD · PK_eph,IC)", k, Ref);
+        var ksEnc = Kdf.Derive(k, Kdf.CounterEnc, alg.KeyType);
+        var ksMac = Kdf.Derive(k, Kdf.CounterMac, alg.KeyType);
+        log.Detail(LogCategory.Crypto, "KSEnc = KDF(K, 1)", ksEnc, "9303-11 9.7.1");
+        log.Detail(LogCategory.Crypto, "KSMAC = KDF(K, 2)", ksMac, "9303-11 9.7.1");
+
+        // Step 4: mutual authentication (tokens over the other party's ephemeral public key, 9303-11 4.4.3.4 / 9.4.?)
+        var tPcd = SymmetricCrypto.Mac(cipher, ksMac, MacInput(cipher, AuthTokenInput(info.Oid, pkEphIcBytes)));
+        var tIcExpected = SymmetricCrypto.Mac(cipher, ksMac, MacInput(cipher, AuthTokenInput(info.Oid, pkEph.GetEncoded(false))));
+        log.Detail(LogCategory.Crypto, "T_PCD = MAC(KSMAC, PK_eph,IC)", tPcd, Ref);
+        var r4 = GeneralAuthenticate(channel, BerTlv.Encode(0x85, tPcd), chained: false, "GENERAL AUTHENTICATE (4: Mutual Authentication)");
+        var tIc = Expect(r4, 0x86, "Authentication Token");
+        if (!tIc.AsSpan().SequenceEqual(tIcExpected))
+            throw new ProtocolException($"PACE: Authentisierungstoken des Chips ungültig (erhalten {Hex.Compact(tIc)}, erwartet {Hex.Compact(tIcExpected)}).");
+        log.Detail(LogCategory.Crypto, "T_IC korrekt", tIc, Ref);
+        var car1 = r4.FirstOrDefault(o => o.Tag == 0x87);
+        var car2 = r4.FirstOrDefault(o => o.Tag == 0x88);
+        if (car1 != null) log.Info(LogCategory.Protocol, $"CAR (aktuell): {Encoding.ASCII.GetString(car1.Value)}", null, "TR-03110-3 B.11");
+        if (car2 != null) log.Info(LogCategory.Protocol, $"CAR (vorherig): {Encoding.ASCII.GetString(car2.Value)}", null, "TR-03110-3 B.11");
+
+        log.Info(LogCategory.Protocol, $"PACE erfolgreich – Secure Messaging ({(cipher == CipherAlgorithm.Aes ? "AES" : "3DES")}) aktiv", null, Ref);
+        var sm = new SecureChannel(channel, alg.KeyType, ksEnc, ksMac, new byte[SymmetricCrypto.BlockSize(cipher)], "PACE");
+        return new PaceResult(sm, info, pkEphIcBytes, r4.FirstOrDefault(o => o.Tag == 0x8A)?.Value)
+        {
+            CompressedChipEphemeralKey = FieldBytes(pkEphIc.AffineXCoord.ToBigInteger(), domain),
+            CompressedTerminalEphemeralKey = FieldBytes(pkEph.AffineXCoord.ToBigInteger(), domain),
+        };
+    }
+
+    /// <summary>3DES MACs are computed over padded data (ISO/IEC 9797-1 M2); AES-CMAC over the unpadded data.</summary>
+    private static byte[] MacInput(CipherAlgorithm cipher, byte[] data) => cipher == CipherAlgorithm.Aes ? data : SymmetricCrypto.Pad(data, 8);
+
+    /// <summary>Public key data object '7F49' {06 OID, 86 point} used as authentication token input (9303-11 4.4.3.4).</summary>
+    public static byte[] AuthTokenInput(string oid, byte[] encodedPoint)
+    {
+        var oidBytes = new DerObjectIdentifier(oid).GetEncoded()[2..];
+        return BerTlv.Encode(0x7F49, [.. BerTlv.Encode(0x06, oidBytes), .. BerTlv.Encode(0x86, encodedPoint)]);
+    }
+
+    private static void Detail(this Logger log, LogCategory c, string m, ECPoint p, string r) => log.Detail(c, m, p.GetEncoded(false), r);
+
+    private static BigInteger RandomScalar(BigInteger n)
+    {
+        var random = new SecureRandom();
+        BigInteger k;
+        do k = new BigInteger(n.BitLength, random); while (k.SignValue == 0 || k.CompareTo(n) >= 0);
+        return k;
+    }
+
+    private static byte[] FieldBytes(BigInteger value, X9ECParameters domain)
+    {
+        var size = (domain.Curve.FieldSize + 7) / 8;
+        var raw = value.ToByteArrayUnsigned();
+        if (raw.Length == size) return raw;
+        var result = new byte[size];
+        raw.CopyTo(result, size - raw.Length);
+        return result;
+    }
+
+    private static ECPoint DecodeAndValidate(X9ECParameters domain, byte[] encoded, string name, ECCurve? curve = null)
+    {
+        ECPoint p;
+        try { p = (curve ?? domain.Curve).DecodePoint(encoded).Normalize(); }
+        catch (Exception ex) { throw new ProtocolException($"PACE: {name} ist kein gültiger Kurvenpunkt: {ex.Message}"); }
+        if (p.IsInfinity || !p.IsValid()) throw new ProtocolException($"PACE: {name} liegt nicht auf der Kurve.");
+        return p;
+    }
+
+    private static List<BerTlv> GeneralAuthenticate(IApduChannel channel, byte[] content, bool chained, string label)
+    {
+        var data = BerTlv.Encode(0x7C, content);
+        var response = channel.Transmit(new CommandApdu(chained ? (byte)0x10 : (byte)0x00, 0x86, 0x00, 0x00, data, 256), label);
+        if (!response.Status.IsSuccess)
+            throw new ProtocolException($"{label} abgelehnt: {response.Status} {response.Status.Description}", response.Status);
+        var dad = BerTlv.ParseSingle(response.Data);
+        if (dad.Tag != 0x7C) throw new ProtocolException($"{label}: Antwort ist kein Dynamic Authentication Data Objekt ('7C').");
+        return [.. dad.Children];
+    }
+
+    private static byte[] Expect(List<BerTlv> objects, uint tag, string name) =>
+        objects.FirstOrDefault(o => o.Tag == tag)?.Value ?? throw new ProtocolException($"PACE: Datenobjekt '{tag:X2}' ({name}) fehlt in der Antwort.");
+}
