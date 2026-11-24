@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:l="clr-namespace:eDocumentReader.App.Localization"
         Title="{l:Tr 'Über eDocumentReader', En='About eDocumentReader'}"
-        Width="640" SizeToContent="Height" ResizeMode="NoResize"
+        Width="640" SizeToContent="Height" ResizeMode="NoResize" Icon="/Assets/eDocumentReader.ico"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
     <DockPanel Margin="16">
         <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
