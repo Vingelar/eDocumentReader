@@ -1,4 +1,5 @@
 ﻿using eDocumentReader.Core.Apdu;
+using eDocumentReader.Core.Crypto;
 using eDocumentReader.Core.Logging;
 using eDocumentReader.Core.Pki;
 using eDocumentReader.Core.Protocols;
@@ -20,6 +21,11 @@ public sealed class EmrtdReadOptions
     public required AccessKey Key { get; init; }
     /// <summary>Use PACE if EF.CardAccess offers it (ICAO 9303-11 4.2: PACE SHALL be preferred).</summary>
     public bool PreferPace { get; init; } = true;
+    /// <summary>
+    /// Use PACE-CAM if EF.CardAccess offers it (ICAO 9303-11 4.4.3.3.3): the chip authenticates within PACE, the
+    /// terminal checks it with EF.CardSecurity, and Chip Authentication with DG14 is not needed.
+    /// </summary>
+    public bool PreferChipAuthenticationMapping { get; init; } = true;
     public bool ChipAuthentication { get; init; } = true;
     public bool TerminalAuthentication { get; init; } = true;
     public bool ActiveAuthentication { get; init; } = true;
@@ -117,6 +123,8 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
         ct.ThrowIfCancellationRequested();
         SecureChannel sm;
         PaceResult? pace = null;
+        PaceInfo? chosen = null;
+        var camVerified = false;
         string? paceFailure = null;
         if (paceInfos.Count > 0 && (options.PreferPace || options.Key is AccessKey.CanKey))
         {
@@ -127,9 +135,22 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
                 AccessKey.CanKey c => PacePassword.FromCan(c.Can),
                 _ => throw new ArgumentOutOfRangeException(nameof(options)),
             };
+            // Supported: ECDH with GM, or with CAM (AES) on standardized domain parameters.
+            var supported = paceInfos.Where(p => p.Algorithm.KeyAgreement == KeyAgreement.Ecdh && p.ParameterId is { } id && StandardizedDomainParameters.IsEc(id)
+                && (p.Algorithm.Mapping == PaceMapping.Generic || (p.Algorithm.Mapping == PaceMapping.ChipAuthentication && p.Algorithm.KeyType != Crypto.SessionKeyType.DesEde))).ToList();
+            var cam = options.PreferChipAuthenticationMapping ? supported.FirstOrDefault(p => p.Algorithm.Mapping == PaceMapping.ChipAuthentication) : null;
+            chosen = cam ?? supported.FirstOrDefault(p => p.Algorithm.Mapping == PaceMapping.Generic) ?? paceInfos[0];
             try
             {
-                pace = Pace.Perform(channel, paceInfos[0], password, includeParameterId: paceInfos.Count > 1);
+                try { pace = Pace.Perform(channel, chosen, password, includeParameterId: paceInfos.Count > 1); }
+                catch (ProtocolException ex) when (cam != null && supported.FirstOrDefault(p => p.Algorithm.Mapping == PaceMapping.Generic) is { } gm)
+                {
+                    // A failed PACE-CAM run is repeated with generic mapping before any fallback to BAC (9303-11 4.2).
+                    log.Warning(LogCategory.Protocol, T($"PACE-CAM fehlgeschlagen ({ex.Message}) – Wiederholung mit PACE-GM", $"PACE-CAM failed ({ex.Message}) – repeating with PACE-GM"));
+                    result.Steps.Add(new ReadStep("PACE-CAM", StepOutcome.Warning, T($"{ex.Message} – Wiederholung mit PACE-GM", $"{ex.Message} – repeated with PACE-GM")));
+                    chosen = gm;
+                    pace = Pace.Perform(channel, chosen, password, includeParameterId: paceInfos.Count > 1);
+                }
             }
             catch (ProtocolException ex) when (options.Key is AccessKey.MrzKey)
             {
@@ -141,7 +162,15 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
         if (pace != null)
         {
             sm = pace.Channel;
-            result.AccessControl = $"PACE ({Oids.Name(paceInfos[0].Oid)}, {(options.Key is AccessKey.CanKey ? "CAN" : "MRZ")})";
+            result.AccessControl = $"PACE ({Oids.Name(chosen!.Oid)}, {(options.Key is AccessKey.CanKey ? "CAN" : "MRZ")})";
+            if (pace.ChipAuthenticationMapping)
+            {
+                // EF.CardSecurity is in the MF (SFI 1D, as EF.SOD in the application): read it before SELECT.
+                Report("EF.CardSecurity");
+                var step = VerifyChipAuthenticationMapping(pace, ReadFile(sm, Lds.SfiCardSecurity, "EF.CardSecurity", 0, result, ct));
+                camVerified = step.Outcome is StepOutcome.Success or StepOutcome.Warning;
+                result.Steps.Add(step);
+            }
             Select(sm, options);
         }
         else
@@ -172,24 +201,34 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
             foreach (var dg in result.DataGroupsListed.Where(d => !Lds.IsEacProtected(d)))
                 ReadFile(sm, Lds.DataGroupSfi(dg), $"EF.DG{dg}", dg, result, ct);
 
-        // 4. Chip Authentication (DG14), then Terminal Authentication (EF.CVCA + chain from the PKI store)
-        if (!options.ChipAuthentication) result.Steps.Add(new ReadStep("Chip Authentication", StepOutcome.Skipped, T("abgewählt", "deselected")));
+        // 4. Chip Authentication (DG14) unless PACE-CAM authenticated the chip, then Terminal Authentication (EF.CVCA +
+        //    chain from the PKI store). After PACE-CAM, TA uses Comp(PK_DH,IFD) of PACE (ICAO 9303-11 7.1).
+        byte[]? terminalKey = null;
+        if (camVerified)
+        {
+            terminalKey = pace!.CompressedTerminalEphemeralKey;
+            log.Info(LogCategory.Protocol, T("Chip Authentication mit DG14 entfällt: der Chip hat sich mit PACE-CAM authentisiert (ICAO 9303-11 4.4.3.3.3).", "Chip Authentication with DG14 not needed: the chip authenticated with PACE-CAM (ICAO 9303-11 4.4.3.3.3)."));
+        }
+        else if (!options.ChipAuthentication) result.Steps.Add(new ReadStep("Chip Authentication", StepOutcome.Skipped, T("abgewählt", "deselected")));
         else if (!result.DataGroups.TryGetValue(14, out var dg14)) result.Steps.Add(new ReadStep("Chip Authentication", StepOutcome.NotSupported, T("kein DG14", "no DG14")));
         else
         {
             Report("Chip Authentication");
-            var ca = RunChipAuthentication(ref sm, dg14, result);
+            terminalKey = RunChipAuthentication(ref sm, dg14, result)?.CompressedTerminalKey;
+        }
+        if (terminalKey != null)
+        {
             // IDL (ISO/IEC 18013-3 8.2.4, EAP): data groups refused with 6982 are protected by CA + TA and are read again afterwards.
             var protectedDgs = options.IsIdl
                 ? result.Steps.Where(s => s.Outcome == StepOutcome.Failed && s.Id.StartsWith("read:EF.DG") && s.Detail.Contains("6982"))
                     .Select(s => int.Parse(s.Id["read:EF.DG".Length..])).ToList()
                 : result.DataGroupsListed.Where(Lds.IsEacProtected).ToList();
-            if (ca != null && protectedDgs.Count > 0)
+            if (protectedDgs.Count > 0)
             {
                 if (options.TerminalAuthentication)
                 {
                     Report("Terminal Authentication");
-                    result.Steps.Add(RunTerminalAuthentication(sm, pace, options, ca, protectedDgs, result, ct));
+                    result.Steps.Add(RunTerminalAuthentication(sm, pace, options, terminalKey, protectedDgs, result, ct));
                 }
                 else result.Steps.Add(new ReadStep("Terminal Authentication", StepOutcome.Skipped, T("abgewählt", "deselected")));
             }
@@ -308,7 +347,33 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
         }
     }
 
-    private ReadStep RunTerminalAuthentication(IApduChannel sm, PaceResult? pace, EmrtdReadOptions options, ChipAuthenticationResult ca, List<int> protectedDgs, EmrtdReadResult result, CancellationToken ct)
+    /// <summary>
+    /// PACE-CAM check (ICAO 9303-11 4.4.3.5.2): Passive Authentication of EF.CardSecurity, then PK_Map,IC = CA_IC · PK_IC
+    /// with its ChipAuthenticationPublicKeyInfo. Reported as the "Chip Authentication" step.
+    /// </summary>
+    private ReadStep VerifyChipAuthenticationMapping(PaceResult pace, byte[]? data)
+    {
+        const string name = "Chip Authentication";
+        if (data == null) return new ReadStep(name, StepOutcome.Failed, T("PACE-CAM: EF.CardSecurity nicht lesbar (9303-11 9.2.11: Pflicht bei CAM)", "PACE-CAM: EF.CardSecurity not readable (9303-11 9.2.11: required with CAM)"));
+        try
+        {
+            var cardSecurity = new CardSecurity(data);
+            var check = cardSecurity.Verify(pki);
+            if (!check.SignatureValid) return new ReadStep(name, StepOutcome.Failed, T($"PACE-CAM: EF.CardSecurity {check.SignatureDetail}", $"PACE-CAM: EF.CardSecurity {check.SignatureDetail}"));
+            var key = Pace.VerifyChipAuthenticationMapping(pace, cardSecurity.Infos.OfType<ChipAuthenticationPublicKeyInfo>());
+            if (key == null) return new ReadStep(name, StepOutcome.Failed, T("PACE-CAM: PK_Map,IC ≠ CA_IC · PK_IC für jeden Schlüssel in EF.CardSecurity – Chip nicht authentisch", "PACE-CAM: PK_Map,IC ≠ CA_IC · PK_IC for every key in EF.CardSecurity – chip not authentic"));
+            var detail = $"PACE-CAM ({Oids.Name(pace.Info.Oid)}){(key.KeyId is { } k ? $", KeyID {k}" : "")}";
+            return check.Valid
+                ? new ReadStep(name, StepOutcome.Success, T($"{detail}: CA_IC · PK_IC = PK_Map,IC, EF.CardSecurity signiert, Kette DS → CSCA gültig", $"{detail}: CA_IC · PK_IC = PK_Map,IC, EF.CardSecurity signed, chain DS → CSCA valid"))
+                : new ReadStep(name, StepOutcome.Warning, T($"{detail}: CA_IC · PK_IC = PK_Map,IC; DS von EF.CardSecurity nicht bis zu einer vertrauenswürdigen CSCA prüfbar", $"{detail}: CA_IC · PK_IC = PK_Map,IC; DS of EF.CardSecurity cannot be verified up to a trusted CSCA"));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return new ReadStep(name, StepOutcome.Failed, T($"PACE-CAM: EF.CardSecurity ungültig ({ex.Message})", $"PACE-CAM: EF.CardSecurity invalid ({ex.Message})"));
+        }
+    }
+
+    private ReadStep RunTerminalAuthentication(IApduChannel sm, PaceResult? pace, EmrtdReadOptions options, byte[] terminalKey, List<int> protectedDgs, EmrtdReadResult result, CancellationToken ct)
     {
         var key = options.Key;
         const string name = "Terminal Authentication";
@@ -346,7 +411,7 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
             else if (key is AccessKey.MrzKey m) idPicc = TerminalAuthentication.StaticIdPicc(m.MrzInformation[..10]);
             else return new ReadStep(name, StepOutcome.Failed, T("ID_PICC nicht bestimmbar.", "ID_PICC cannot be determined."));
             TerminalAuthenticationResult ta;
-            try { ta = TerminalAuthentication.Perform(sm, chain, terminal.PrivateKey, idPicc, ca.CompressedTerminalKey, options.MaxCommandData); }
+            try { ta = TerminalAuthentication.Perform(sm, chain, terminal.PrivateKey, idPicc, terminalKey, options.MaxCommandData); }
             catch (Exception ex) when (ex is SecureMessagingException or ProtocolException)
             {
                 return new ReadStep(name, StepOutcome.Failed, T($"Kette über CAR {car}: {ex.Message}", $"Chain via CAR {car}: {ex.Message}"));

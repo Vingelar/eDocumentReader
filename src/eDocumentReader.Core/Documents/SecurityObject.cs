@@ -87,8 +87,13 @@ public sealed class SecurityObject
     }
 
     /// <summary>Verifies the CMS signature with the embedded Document Signer certificate (no chain validation).</summary>
-    public (bool Valid, X509Certificate? Signer, string Detail) VerifySignature()
+    public (bool Valid, X509Certificate? Signer, string Detail) VerifySignature() => VerifySigner(SignedData, Certificates);
+
+    /// <summary>One SignerInfo, verified with the embedded signer certificate (EF.SOD, EF.CardSecurity).</summary>
+    public static (bool Valid, X509Certificate? Signer, string Detail) VerifySigner(CmsSignedData signedData, IReadOnlyList<X509Certificate> certificates)
     {
+        var SignedData = signedData;
+        var Certificates = certificates;
         var signers = SignedData.GetSignerInfos().GetSigners().ToList();
         if (signers.Count != 1) return (false, null, T($"{signers.Count} SignerInfos (genau 1 erwartet, ICAO 9303-10 4.6.2.2).", $"{signers.Count} SignerInfos (exactly 1 expected, ICAO 9303-10 4.6.2.2)."));
         var signer = signers[0];

@@ -7,6 +7,8 @@ public static class Lds
     public const byte SfiSod = 0x1D;
     public const byte SfiCvca = 0x1C;
     public const byte SfiCardAccess = 0x1C;
+    /// <summary>EF.CardSecurity in the MF (ICAO 9303-10 3.11.3; same SFI as EF.SOD in the application).</summary>
+    public const byte SfiCardSecurity = 0x1D;
 
     /// <summary>LDS tag to data group number (ICAO 9303-10 Table 34). 0 = unknown tag.</summary>
     public static int DataGroupNumber(byte tag) => tag switch

@@ -35,12 +35,21 @@ public sealed record PaceTestValues(BigInteger MapPrivateKey, BigInteger Ephemer
 
 public sealed record PaceResult(SecureChannel Channel, PaceInfo Info, byte[] ChipEphemeralPublicKey, byte[]? EncryptedChipAuthenticationData)
 {
+    /// <summary>PK_Map,IC of the mapping step (needed for the PACE-CAM check PK_Map,IC = CA_IC · PK_IC).</summary>
+    public byte[]? ChipMappingPublicKey { get; init; }
+    /// <summary>PACE-CAM only: CA_IC = D(KS_Enc, A_IC) without padding (ICAO 9303-11 4.4.3.5).</summary>
+    public byte[]? ChipAuthenticationData { get; init; }
+    public bool ChipAuthenticationMapping => Info.Algorithm.Mapping == PaceMapping.ChipAuthentication;
+
     /// <summary>Comp(PK_eph,PICC) – ID_PICC for Terminal Authentication v1 with dynamic binding (TR-03110-1 3.5).</summary>
     public required byte[] CompressedChipEphemeralKey { get; init; }
     public required byte[] CompressedTerminalEphemeralKey { get; init; }
 }
 
-/// <summary>PACE according to ICAO 9303-11 clause 4.4 (APDUs 4.4.4, mapping 4.4.3.3). Currently ECDH with generic mapping.</summary>
+/// <summary>
+/// PACE according to ICAO 9303-11 clause 4.4 (APDUs 4.4.4, mapping 4.4.3.3): ECDH with generic mapping and with
+/// Chip Authentication Mapping (4.4.3.3.3; the terminal side of the mapping equals GM, plus A_IC in step 4).
+/// </summary>
 public static class Pace
 {
     private const string Ref = "ICAO 9303-11 4.4";
@@ -50,7 +59,8 @@ public static class Pace
         var log = channel.Logger;
         var alg = info.Algorithm;
         log.Info(LogCategory.Protocol, T($"PACE: Start mit {info.Description}, Passwort {password.Type}", $"PACE: start with {info.Description}, password {password.Type}"), null, Ref);
-        if (alg.KeyAgreement != KeyAgreement.Ecdh || alg.Mapping != PaceMapping.Generic)
+        if (alg.KeyAgreement != KeyAgreement.Ecdh || alg.Mapping is not (PaceMapping.Generic or PaceMapping.ChipAuthentication)
+            || (alg.Mapping == PaceMapping.ChipAuthentication && alg.KeyType == SessionKeyType.DesEde))
             throw new NotSupportedException(T($"PACE-Variante {Oids.Name(info.Oid)} ist noch nicht implementiert.", $"PACE variant {Oids.Name(info.Oid)} is not implemented yet."));
         if (info.ParameterId is not { } paramId || !StandardizedDomainParameters.IsEc(paramId))
             throw new NotSupportedException(T("Explizite Domain-Parameter (PACEDomainParameterInfo) sind noch nicht implementiert.", "Explicit domain parameters (PACEDomainParameterInfo) are not implemented yet."));
@@ -132,13 +142,65 @@ public static class Pace
         if (car1 != null) log.Info(LogCategory.Protocol, T($"CAR (aktuell): {Encoding.ASCII.GetString(car1.Value)}", $"CAR (current): {Encoding.ASCII.GetString(car1.Value)}"), null, "TR-03110-3 B.11");
         if (car2 != null) log.Info(LogCategory.Protocol, T($"CAR (vorherig): {Encoding.ASCII.GetString(car2.Value)}", $"CAR (previous): {Encoding.ASCII.GetString(car2.Value)}"), null, "TR-03110-3 B.11");
 
+        byte[]? caIc = null;
+        if (alg.Mapping == PaceMapping.ChipAuthentication)
+        {
+            // ICAO 9303-11 4.4.3.5: A_IC in '8A' is mandatory for CAM; CA_IC = D(KS_Enc, A_IC), IV = E(KS_Enc, -1).
+            var aIc = Expect(r4, 0x8A, "Encrypted Chip Authentication Data");
+            caIc = DecryptChipAuthenticationData(cipher, ksEnc, aIc);
+            log.Detail(LogCategory.Crypto, "A_IC", aIc, "9303-11 4.4.3.5");
+            log.Detail(LogCategory.Crypto, "CA_IC = D(KSEnc, A_IC)", caIc, "9303-11 4.4.3.5");
+        }
+
         log.Info(LogCategory.Protocol, T($"PACE erfolgreich – Secure Messaging ({(cipher == CipherAlgorithm.Aes ? "AES" : "3DES")}) aktiv", $"PACE successful – secure messaging ({(cipher == CipherAlgorithm.Aes ? "AES" : "3DES")}) active"), null, Ref);
         var sm = new SecureChannel(channel, alg.KeyType, ksEnc, ksMac, new byte[SymmetricCrypto.BlockSize(cipher)], "PACE");
         return new PaceResult(sm, info, pkEphIcBytes, r4.FirstOrDefault(o => o.Tag == 0x8A)?.Value)
         {
+            ChipMappingPublicKey = pkMapIcBytes,
+            ChipAuthenticationData = caIc,
             CompressedChipEphemeralKey = FieldBytes(pkEphIc.AffineXCoord.ToBigInteger(), domain),
             CompressedTerminalEphemeralKey = FieldBytes(pkEph.AffineXCoord.ToBigInteger(), domain),
         };
+    }
+
+    /// <summary>
+    /// CA_IC from the Encrypted Chip Authentication Data (ICAO 9303-11 4.4.3.5): AES-CBC decryption with KS_Enc and
+    /// IV = E(KS_Enc, -1), then removal of the ISO/IEC 9797-1 method 2 padding.
+    /// </summary>
+    public static byte[] DecryptChipAuthenticationData(CipherAlgorithm cipher, byte[] ksEnc, byte[] aIc)
+    {
+        var block = SymmetricCrypto.BlockSize(cipher);
+        if (cipher != CipherAlgorithm.Aes || aIc.Length == 0 || aIc.Length % block != 0)
+            throw new ProtocolException(T($"PACE-CAM: A_IC hat {aIc.Length} Byte (Vielfaches der AES-Blockgröße erwartet).", $"PACE-CAM: A_IC has {aIc.Length} bytes (multiple of the AES block size expected)."));
+        var iv = SymmetricCrypto.EcbEncryptBlock(cipher, ksEnc, Enumerable.Repeat((byte)0xFF, block).ToArray());
+        try { return SymmetricCrypto.Unpad(SymmetricCrypto.CbcDecrypt(cipher, ksEnc, iv, aIc)); }
+        catch (CryptographicException ex) { throw new ProtocolException(T($"PACE-CAM: A_IC nicht entschlüsselbar ({ex.Message}).", $"PACE-CAM: A_IC cannot be decrypted ({ex.Message}).")); }
+    }
+
+    /// <summary>
+    /// Terminal check of PACE-CAM (ICAO 9303-11 4.4.3.5.2): PK_Map,IC = CA_IC · PK_IC, with PK_IC from a
+    /// ChipAuthenticationPublicKeyInfo of EF.CardSecurity on the PACE domain. Returns the matching key or null.
+    /// </summary>
+    public static ChipAuthenticationPublicKeyInfo? VerifyChipAuthenticationMapping(PaceResult pace, IEnumerable<ChipAuthenticationPublicKeyInfo> keys)
+    {
+        if (pace.ChipAuthenticationData is not { } caIc || pace.ChipMappingPublicKey is not { } mapping || pace.Info.ParameterId is not { } id) return null;
+        var domain = StandardizedDomainParameters.Curve(id);
+        var ca = new BigInteger(1, caIc);
+        if (ca.SignValue <= 0 || ca.CompareTo(domain.N) >= 0) return null;
+        var expected = domain.Curve.DecodePoint(mapping).Normalize();
+        foreach (var info in keys)
+        {
+            ECPoint pk;
+            try
+            {
+                if (ChipPublicKey.From(info).Domain is not EcDomain ec || !ec.Parameters.Curve.Equals(domain.Curve)) continue;
+                pk = domain.Curve.DecodePoint(ChipPublicKey.From(info).PublicKey).Normalize();
+            }
+            catch (Exception ex) when (ex is ArgumentException or FormatException or CryptographicException or NotSupportedException) { continue; }
+            if (!pk.IsValid()) continue;
+            if (pk.Multiply(ca).Normalize().Equals(expected)) return info;
+        }
+        return null;
     }
 
     /// <summary>3DES MACs are computed over padded data (ISO/IEC 9797-1 M2); AES-CMAC over the unpadded data.</summary>

@@ -7,7 +7,7 @@ Oberfläche und Meldungen auf Deutsch oder Englisch (Menü *Einstellungen → Sp
 
 ## Funktionen
 
-- **Reisepass / ID-Karte (eMRTD, ICAO Doc 9303):** BAC, PACE (MRZ oder CAN), Chip Authentication, Terminal Authentication,
+- **Reisepass / ID-Karte (eMRTD, ICAO Doc 9303):** BAC, PACE (MRZ oder CAN; GM und CAM mit Prüfung von EF.CardSecurity), Chip Authentication, Terminal Authentication,
   Active Authentication und Passive Authentication mit CSCA-Kette und CRL; Anzeige von MRZ und Gesichtsbild.
 - **Führerschein (IDL, ISO/IEC 18013-2/-3):** BAP und PACE, EAP mit Terminal Authentication, aufbereitete Anzeige der Datengruppen.
 - **Zulassungsbescheinigung (eVRC, Richtlinie 2003/127/EG):** Lesen und Signaturprüfung.
@@ -61,7 +61,7 @@ User interface and messages in German or English (menu *Settings → Language*).
 
 ## Features
 
-- **Passport / ID card (eMRTD, ICAO Doc 9303):** BAC, PACE (MRZ or CAN), Chip Authentication, Terminal Authentication,
+- **Passport / ID card (eMRTD, ICAO Doc 9303):** BAC, PACE (MRZ or CAN; GM and CAM with verification of EF.CardSecurity), Chip Authentication, Terminal Authentication,
   Active Authentication and Passive Authentication with CSCA chain and CRL; display of MRZ and facial image.
 - **Driving licence (IDL, ISO/IEC 18013-2/-3):** BAP and PACE, EAP with Terminal Authentication, prepared display of the data groups.
 - **Vehicle registration certificate (eVRC, Directive 2003/127/EC):** reading and signature verification.
