@@ -45,6 +45,22 @@ public class IdlTests
     }
 
     [Fact]
+    public void Tag87_OutsideDg1_IsNoCategory_AndDg11_IsNotDg1()
+    {
+        // DG7 biometric header 'A1' with format owner '87' (ISO/IEC 7816-11); DG11 with domestic tags (18013-2 C.4.12).
+        var dg7 = BerTlv.EncodeConstructed(0x63, BerTlv.Encode(0x02, [1]), BerTlv.EncodeConstructed(0x7F61, BerTlv.Encode(0x02, [1]),
+            BerTlv.EncodeConstructed(0x7F60, BerTlv.EncodeConstructed(0xA1, BerTlv.Encode(0x87, [1, 1]), BerTlv.Encode(0x88, [0, 1])))));
+        var dg11 = BerTlv.EncodeConstructed(0x6D, BerTlv.Encode(0x99, [7]));
+        var r = Idl.Parse(new Dictionary<int, byte[]> { [1] = Dg1(), [7] = dg7, [11] = dg11 });
+        Assert.Equal(2, r.Categories.Count);
+        Assert.All(r.Categories, c => Assert.Empty(c.Findings));
+        Assert.Contains(r.Fields, f => f.Path.StartsWith("DG11") && f.Findings.Count > 0);
+        Assert.All(r.Fields.Where(f => Idl.IsDg1(f.Path)), f => Assert.Empty(f.Findings));
+        Assert.False(Idl.IsDg1("DG11"));
+        Assert.True(Idl.IsDg1("DG1/7F63"));
+    }
+
+    [Fact]
     public void PlaceholderText_IsShownWithFinding()
     {
         var dg1 = BerTlv.EncodeConstructed(0x61, BerTlv.Encode(0x53, Encoding.ASCII.GetBytes("PLACEHOLDER")));

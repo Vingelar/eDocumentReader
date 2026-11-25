@@ -159,7 +159,8 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
         // 3. EF.COM, EF.SOD and the data groups readable after BAC/PACE (all except EAC-protected DG3/DG4)
         var com = ReadFile(sm, Lds.SfiCom, "EF.COM", 0, result, ct) ?? throw new ProtocolException(T("EF.COM nicht lesbar.", "EF.COM not readable."));
         var tagList = BerTlv.ParseSingle(com).Find(0x5C)?.Value ?? [];
-        if (!options.IsIdl) result.DataGroupsListed.AddRange(tagList.Select(Lds.DataGroupNumber).Where(d => d > 0));
+        // EF.COM tag list: eMRTD tags (ICAO 9303-10) or the IDL tags of ISO/IEC 18013-2 Table C.2.
+        result.DataGroupsListed.AddRange(tagList.Select(t => options.IsIdl ? Idl.DataGroupNumber(t) : Lds.DataGroupNumber(t)).Where(d => d > 0).Distinct());
         var sod = ReadFile(sm, Lds.SfiSod, "EF.SOD", 0, result, ct);
         if (options.IsIdl)
         {

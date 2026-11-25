@@ -33,6 +33,9 @@ public sealed class IdlReadout
 /// </summary>
 public static class Idl
 {
+    /// <summary>True for DG1 and its elements only ("DG1", "DG1/…"), not for DG10–DG14.</summary>
+    public static bool IsDg1(string path) => path == "DG1" || path.StartsWith("DG1/", StringComparison.Ordinal);
+
     /// <summary>EF.COM / data group tags of the IDL (differ from the eMRTD LDS).</summary>
     public static int DataGroupNumber(byte tag) => tag switch
     {
@@ -118,7 +121,9 @@ public static class Idl
             case 0x5F1F:
                 ParseDemographics(node.Value, path, r);
                 return;
-            case 0x87:
+            // '87' is a driving privilege only inside DG1 '7F63'; elsewhere (e.g. the biometric header 'A1' of
+            // DG6–DG9, ISO/IEC 7816-11) it is a different data object and is shown generically.
+            case 0x87 when dg == 1 && parent.Tag == 0x7F63:
                 var cat = ParseCategory(node.Value);
                 r.Categories.Add(cat);
                 r.Fields.Add(new IdlField(path, node.TagHex, name, cat.Describe(), cat.Findings));

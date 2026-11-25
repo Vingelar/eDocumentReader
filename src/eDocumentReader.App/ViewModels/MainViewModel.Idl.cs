@@ -28,14 +28,20 @@ public sealed partial class MainViewModel
         foreach (var f in idl.Fields) IdlFields.Add(f);
 
         // Overview panel: the DG1 fields, then the driving privileges.
-        foreach (var f in idl.Fields.Where(f => f.Path.StartsWith("DG1/5F1F") || f.TagHex == "53" && f.Path.StartsWith("DG1")))
+        foreach (var f in idl.Fields.Where(f => f.Path.StartsWith("DG1/5F1F") || f.TagHex == "53" && Idl.IsDg1(f.Path)))
             MrzRows.Add(new MrzRow(f.Name, f.Value, f.Findings.Count == 0 ? "✔" : "⚠"));
         foreach (var c in idl.Categories)
             MrzRows.Add(new MrzRow(T($"Klasse {c.Category}", $"Category {c.Category}"), c.Describe(), c.Findings.Count == 0 ? "✔" : "⚠"));
-        var missing = new[] { 1, 2, 4, 5 }.Where(d => !result.DataGroups.ContainsKey(d)).Select(d => $"DG{d}").ToList();
-        var findings = idl.Fields.Where(f => f.Path.StartsWith("DG1")).SelectMany(f => f.Findings).Concat(idl.Categories.SelectMany(c => c.Findings)).Distinct()
+        // Only DG1 is mandatory (ISO/IEC 18013-2 clause 8); further DGs are expected only when EF.COM lists them.
+        var expected = result.DataGroupsListed.Append(1).Distinct().Order();
+        var notRead = expected.Where(d => !result.DataGroups.ContainsKey(d)).ToList();
+        bool Refused(int d) => result.Steps.Any(s => s.Id == $"read:EF.DG{d}" && s.Outcome == StepOutcome.Failed && s.Detail.Contains("6982"));
+        var protectedDgs = notRead.Where(Refused).Select(d => $"DG{d}").ToList();
+        var missing = notRead.Where(d => !Refused(d)).Select(d => $"DG{d}").ToList();
+        var findings = idl.Fields.Where(f => Idl.IsDg1(f.Path)).SelectMany(f => f.Findings).Concat(idl.Categories.SelectMany(c => c.Findings)).Distinct()
             .Select(x => "⚠ " + x).ToList();
-        if (missing.Count > 0) findings.Insert(0, T($"Nicht gelesen: {string.Join(", ", missing)} (geschützt – Terminal Authentication nötig?)", $"Not read: {string.Join(", ", missing)} (protected – Terminal Authentication required?)"));
+        if (missing.Count > 0) findings.Insert(0, T($"In EF.COM aufgeführt, aber nicht gelesen: {string.Join(", ", missing)}", $"Listed in EF.COM but not read: {string.Join(", ", missing)}"));
+        if (protectedDgs.Count > 0) findings.Insert(0, T($"Nicht gelesen: {string.Join(", ", protectedDgs)} (geschützt – Terminal Authentication nötig)", $"Not read: {string.Join(", ", protectedDgs)} (protected – Terminal Authentication required)"));
         MrzFindings = string.Join(Environment.NewLine, findings);
         MrzText = string.Join("  ·  ", idl.Fields.Where(f => f.Key is "familyName" or "givenNames" or "licenceNumber").Select(f => f.Value));
 
