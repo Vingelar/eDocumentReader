@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.IO;
 using System.Text;
 using System.Windows;
@@ -22,18 +22,20 @@ public sealed partial class ReaderItem : ObservableObject
     public string Display => Name;
 }
 
+/// <summary>Display level of one log category. The logger always records everything (Trace); this only filters the view.</summary>
 public sealed partial class LogLevelSetting : ObservableObject
 {
-    private readonly Logger logger;
-    public LogLevelSetting(Logger logger, LogCategory category)
+    private readonly Action changed;
+    public LogLevelSetting(LogCategory category, LogLevel level, Action changed)
     {
-        this.logger = logger;
         Category = category;
-        level = logger[category];
+        this.level = level;
+        this.changed = changed;
     }
     public LogCategory Category { get; }
     [ObservableProperty] private LogLevel level;
-    partial void OnLevelChanged(LogLevel value) => logger[Category] = value;
+    partial void OnLevelChanged(LogLevel value) => changed();
+    public bool Shows(LogEntry e) => e.Level != LogLevel.Off && e.Level <= Level;
 }
 
 public sealed partial class MainViewModel : ObservableObject, IDisposable
@@ -42,10 +44,15 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly ReaderMonitor monitor = new();
     private PcscTransport? transport;
 
-    public Logger Logger { get; } = new(LogLevel.Detail);
+    private const int MaxDisplayedLogEntries = 20000;
+    /// <summary>Everything recorded (Trace for all categories), in the order of the log sink; the view shows a filtered part.</summary>
+    private readonly List<LogEntry> allLogEntries = [];
+    private readonly Dictionary<LogCategory, LogLevelSetting> logFilter = [];
+
+    public Logger Logger { get; } = new(LogLevel.Trace);
     public MemoryLogSink LogSink { get; } = new();
     public ObservableCollection<ReaderItem> Readers { get; } = [];
-    public ObservableCollection<LogEntry> LogEntries { get; } = [];
+    [ObservableProperty] private ObservableCollection<LogEntry> logEntries = [];
     public ObservableCollection<LogLevelSetting> LogLevels { get; } = [];
     public IReadOnlyList<LogLevel> AvailableLevels { get; } = Enum.GetValues<LogLevel>();
     public CardChannel? Channel { get; private set; }
@@ -62,12 +69,19 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public MainViewModel()
     {
         Logger.AddSink(LogSink);
+        foreach (var c in Enum.GetValues<LogCategory>())
+        {
+            var setting = new LogLevelSetting(c, LogLevel.Detail, RefilterLog);
+            logFilter[c] = setting;
+            LogLevels.Add(setting);
+        }
         LogSink.EntryAdded += e => dispatcher.BeginInvoke(() =>
         {
+            allLogEntries.Add(e);
+            if (!IsLogVisible(e)) return;
             LogEntries.Add(e);
-            if (LogEntries.Count > 20000) LogEntries.RemoveAt(0);
+            if (LogEntries.Count > MaxDisplayedLogEntries) LogEntries.RemoveAt(0);
         });
-        foreach (var c in Enum.GetValues<LogCategory>()) LogLevels.Add(new LogLevelSetting(Logger, c));
         monitor.Changed += states => dispatcher.BeginInvoke(() => UpdateReaders(states));
         monitor.Failed += ex => dispatcher.BeginInvoke(() => Logger.Error(LogCategory.Reader, T($"Lesermonitor: {ex.Message}", $"Reader monitor: {ex.Message}")));
         monitor.Start();
@@ -98,6 +112,28 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             if (!s.CardPresent && IsConnected && !IsReading && transport?.Name == s.Name) Disconnect();
         }
         SelectedReader ??= Readers.FirstOrDefault(r => r.CardPresent) ?? Readers.FirstOrDefault();
+    }
+
+    /// <summary>Selecting another reader closes the connection to the current one.</summary>
+    partial void OnSelectedReaderChanged(ReaderItem? value)
+    {
+        if (IsConnected && !IsReading && transport != null && transport.Name != value?.Name) Disconnect();
+    }
+
+    private bool IsLogVisible(LogEntry e) => logFilter.TryGetValue(e.Category, out var f) && f.Shows(e);
+
+    /// <summary>Rebuilds the log view from everything recorded, with the current display levels.</summary>
+    private void RefilterLog() =>
+        LogEntries = new ObservableCollection<LogEntry>(allLogEntries.Where(IsLogVisible).TakeLast(MaxDisplayedLogEntries));
+
+    /// <summary>First displayed log entry at or after a log sink index (the start of a step), or null.</summary>
+    public LogEntry? FindLogEntry(int anchor)
+    {
+        if (anchor < 0) return null;
+        var shown = new HashSet<LogEntry>(LogEntries, ReferenceEqualityComparer.Instance);
+        for (var i = anchor; i < allLogEntries.Count; i++)
+            if (shown.Contains(allLogEntries[i])) return allLogEntries[i];
+        return null;
     }
 
     private bool CanConnect() => SelectedReader != null && !IsConnected && !IsReading;
@@ -199,6 +235,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private void ClearLog()
     {
         LogSink.Clear();
+        allLogEntries.Clear();
         LogEntries.Clear();
     }
 

@@ -47,7 +47,7 @@ public sealed partial class MainViewModel
         catch (Exception ex)
         {
             StatusText = T($"Lesen fehlgeschlagen: {ex.Message}", $"Reading failed: {ex.Message}");
-            ReadSteps.Add(new ReadStep(T("Lesen", "Read"), StepOutcome.Failed, ex.Message));
+            ReadSteps.Add(StepItem.From(new ReadStep(T("Lesen", "Read"), StepOutcome.Failed, ex.Message), -1));
             Logger.Error(LogCategory.Application, T($"eVRC lesen fehlgeschlagen: {ex.Message}", $"Reading the eVRC failed: {ex.Message}"));
         }
         finally
@@ -65,9 +65,9 @@ public sealed partial class MainViewModel
         lastFiles = result.Files;
         HasResult = true;
         RememberSetSource(() => DocumentSet.FromEvrc(result), SetDocumentType.Evrc, null);
-        foreach (var s in result.Steps) ReadSteps.Add(s);
+        foreach (var s in result.Steps) ReadSteps.Add(StepItem.From(s, -1));
         if (result.Findings.Count > 0)
-            ReadSteps.Add(new ReadStep(T("Normkonformität", "Conformance"), StepOutcome.Warning, T($"{result.Findings.Count} Abweichung(en), siehe Tab „Sicherheit“", $"{result.Findings.Count} deviation(s), see tab 'Security'")));
+            ReadSteps.Add(StepItem.From(new ReadStep(T("Normkonformität", "Conformance"), StepOutcome.Warning, T($"{result.Findings.Count} Abweichung(en), siehe Tab „Sicherheit“", $"{result.Findings.Count} deviation(s), see tab 'Security'")), -1));
         foreach (var f in result.Files) FileNodes.Add(FileNode.FromFile(f, Evrc.TagName));
         foreach (var f in result.Fields) EvrcFields.Add(f);
         SecurityReport = BuildEvrcReport(result);

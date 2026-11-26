@@ -111,6 +111,9 @@ public sealed class MemoryLogSink : ILogSink
     }
 
     public IReadOnlyList<LogEntry> Snapshot() { lock (gate) return [.. entries]; }
+    /// <summary>Number of entries so far; an index into a later <see cref="Snapshot"/>.</summary>
+    public int Count { get { lock (gate) return entries.Count; } }
+    public LogEntry? At(int index) { lock (gate) return index >= 0 && index < entries.Count ? entries[index] : null; }
     public void Clear() { lock (gate) entries.Clear(); }
 
     public string ToText() => string.Join(Environment.NewLine, Snapshot().Select(e => e.Format()));

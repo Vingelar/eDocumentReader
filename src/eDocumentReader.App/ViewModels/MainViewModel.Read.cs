@@ -53,7 +53,7 @@ public sealed partial class MainViewModel
     [ObservableProperty] private string securityReport = string.Empty;
     [ObservableProperty, NotifyCanExecuteChangedFor(nameof(SaveSelectedFileCommand))] private FileNode? selectedFileNode;
 
-    public ObservableCollection<ReadStep> ReadSteps { get; } = [];
+    public ObservableCollection<StepItem> ReadSteps { get; } = [];
     public ObservableCollection<MrzRow> MrzRows { get; } = [];
     public ObservableCollection<FileNode> FileNodes { get; } = [];
 
@@ -130,10 +130,13 @@ public sealed partial class MainViewModel
 
         IsReading = true;
         ClearResult();
+        ReadProgress = 0;
         readCancellation = new CancellationTokenSource();
         var ct = readCancellation.Token;
         var channel = Channel;
         var started = DateTime.Now;
+        var automatic = ApplicationChoice == 0;
+        var fallback = false;
         try
         {
             var application = ApplicationChoice switch
@@ -142,54 +145,168 @@ public sealed partial class MainViewModel
                 2 => EmrtdReader.DocumentApplication.Idl,
                 _ => await Task.Run(() => EmrtdReader.DetectApplication(channel), ct),
             };
-            var isIdl = application == EmrtdReader.DocumentApplication.Idl;
-            if (!isIdl && pastedIdlMrz != null && !UseCan)
-                throw new ProtocolException(T("Führerschein-MRZ eingegeben, auf der Karte ist aber keine IDL-Anwendung (ISO/IEC 18013-3) auswählbar.", "A driving licence MRZ was entered, but no IDL application (ISO/IEC 18013-3) can be selected on the card."));
-            var options = new EmrtdReadOptions
-            {
-                Key = key,
-                Aid = isIdl ? EmrtdReader.IdlAid : EmrtdReader.EmrtdAid,
-                ApplicationName = isIdl ? "IDL" : "eMRTD",
-                PreferPace = PreferPace,
-                ChipAuthentication = RunChipAuthentication,
-                TerminalAuthentication = RunTerminalAuthentication,
-                ActiveAuthentication = RunActiveAuthentication,
-            };
             ReadStage = T("PKI-Speicher laden", "Loading the PKI store");
             pki ??= await Task.Run(() => new PkiStore());
-            var reader = new EmrtdReader(channel, pki)
+            while (true)
             {
-                Progress = p => dispatcher.BeginInvoke(() =>
+                var isIdl = application == EmrtdReader.DocumentApplication.Idl;
+                if (!isIdl && pastedIdlMrz != null && !UseCan)
+                    throw new ProtocolException(T("Führerschein-MRZ eingegeben, auf der Karte ist aber keine IDL-Anwendung (ISO/IEC 18013-3) auswählbar.", "A driving licence MRZ was entered, but no IDL application (ISO/IEC 18013-3) can be selected on the card."));
+                var options = new EmrtdReadOptions
                 {
-                    ReadStage = p.File == null ? p.Stage : p.Total > 0 ? T($"{p.Stage} {p.File}: {p.Done} / {p.Total} Bytes", $"{p.Stage} {p.File}: {p.Done} / {p.Total} bytes") : $"{p.Stage} {p.File}";
-                    ReadProgress = p.Total > 0 ? 100.0 * p.Done / p.Total : 0;
-                }),
-            };
-            var result = await Task.Run(() => reader.Read(options, ct), ct);
-            ShowResult(result, isIdl);
-            var failed = result.Steps.Count(s => s.Outcome == StepOutcome.Failed);
-            StatusText = T($"{(isIdl ? "Führerschein (IDL)" : "Dokument")} gelesen in {(DateTime.Now - started).TotalSeconds:F1} s – {result.AccessControl}{(failed > 0 ? $", {failed} Schritt(e) fehlgeschlagen" : "")}", $"{(isIdl ? "Driving licence (IDL)" : "Document")} read in {(DateTime.Now - started).TotalSeconds:F1} s – {result.AccessControl}{(failed > 0 ? $", {failed} step(s) failed" : "")}");
+                    Key = key,
+                    Aid = isIdl ? EmrtdReader.IdlAid : EmrtdReader.EmrtdAid,
+                    ApplicationName = isIdl ? "IDL" : "eMRTD",
+                    PreferPace = PreferPace,
+                    ChipAuthentication = RunChipAuthentication,
+                    TerminalAuthentication = RunTerminalAuthentication,
+                    ActiveAuthentication = RunActiveAuthentication,
+                };
+                var reader = new EmrtdReader(channel, pki)
+                {
+                    Progress = p => dispatcher.BeginInvoke(() =>
+                        ReadStage = p.File == null ? p.Stage : p.Total > 0 ? T($"{p.Stage} {p.File}: {p.Done} / {p.Total} Bytes", $"{p.Stage} {p.File}: {p.Done} / {p.Total} bytes") : $"{p.Stage} {p.File}"),
+                    StepChanged = e =>
+                    {
+                        // Captured on the reading thread: the log entries of this step follow this index.
+                        var anchor = LogSink.Count;
+                        dispatcher.BeginInvoke(() => ApplyStep(e, anchor));
+                    },
+                };
+                EmrtdReadResult result;
+                try
+                {
+                    result = await Task.Run(() => reader.Read(options, ct), ct);
+                }
+                catch (AccessControlException ex) when (automatic && isIdl && !fallback && pastedIdlMrz == null)
+                {
+                    // Automatic detection chose the IDL application (its SELECT succeeded), but the key was not
+                    // accepted there: the card may also carry an eMRTD application for which the key is meant.
+                    fallback = true;
+                    await FlushStepEvents();
+                    FinishOpenSteps(cancelled: false, ex.Message);
+                    var anchor = LogSink.Count;
+                    Logger.Warning(LogCategory.Application, T($"IDL-Anwendung: Zugriffskontrolle fehlgeschlagen ({ex.Message}) – Versuch mit der eMRTD-Anwendung und demselben Schlüssel", $"IDL application: access control failed ({ex.Message}) – trying the eMRTD application with the same key"));
+                    ReadSteps.Add(StepItem.From(new ReadStep(T("Anwendung", "Application"), StepOutcome.Warning, T("IDL lehnt den Schlüssel ab – Versuch mit eMRTD (ICAO 9303)", "IDL rejects the key – trying eMRTD (ICAO 9303)")), anchor));
+                    ResetCard();
+                    application = EmrtdReader.DocumentApplication.Emrtd;
+                    continue;
+                }
+                await FlushStepEvents();
+                FinishOpenSteps(cancelled: false, null);
+                ReadProgress = 100;
+                ShowResult(result, isIdl);
+                var failed = result.Steps.Count(s => s.Outcome == StepOutcome.Failed);
+                var via = fallback ? T(" (nach Rückfall von IDL)", " (after fallback from IDL)") : "";
+                StatusText = T($"{(isIdl ? "Führerschein (IDL)" : "Dokument")} gelesen in {(DateTime.Now - started).TotalSeconds:F1} s – {result.AccessControl}{via}{(failed > 0 ? $", {failed} Schritt(e) fehlgeschlagen" : "")}", $"{(isIdl ? "Driving licence (IDL)" : "Document")} read in {(DateTime.Now - started).TotalSeconds:F1} s – {result.AccessControl}{via}{(failed > 0 ? $", {failed} step(s) failed" : "")}");
+                break;
+            }
         }
         catch (OperationCanceledException)
         {
+            await FlushStepEvents();
+            FinishOpenSteps(cancelled: true, T("abgebrochen", "cancelled"));
             StatusText = T("Lesen abgebrochen", "Reading cancelled");
             Logger.Warning(LogCategory.Application, T("Lesen durch Benutzer abgebrochen", "Reading cancelled by the user"));
         }
         catch (Exception ex)
         {
-            var sw = ex is ProtocolException { Status: { } s } ? $" ({s})" : "";
+            var sw = ex switch { ProtocolException { Status: { } s } => $" ({s})", AccessControlException { Status: { } a } => $" ({a})", _ => "" };
             StatusText = T($"Lesen fehlgeschlagen: {ex.Message}", $"Reading failed: {ex.Message}");
-            ReadSteps.Add(new ReadStep(T("Lesen", "Read"), StepOutcome.Failed, ex.Message + sw));
             Logger.Error(LogCategory.Application, T($"Lesen fehlgeschlagen: {ex.Message}", $"Reading failed: {ex.Message}"));
+            await FlushStepEvents();
+            // The reader already marked a failed access control; otherwise the running entry gets the error.
+            if (!FinishOpenSteps(cancelled: false, ex.Message + sw) && ex is not AccessControlException)
+                ReadSteps.Add(StepItem.From(new ReadStep(T("Lesen", "Read"), StepOutcome.Failed, ex.Message + sw), lastStepAnchor));
         }
         finally
         {
             IsReading = false;
             ReadStage = string.Empty;
-            ReadProgress = 0;
             readCancellation.Dispose();
             readCancellation = null;
         }
+    }
+
+    private int lastStepAnchor = -1;
+
+    /// <summary>Lets the step events queued by the reading thread reach the list before an attempt is closed.</summary>
+    private Task FlushStepEvents() => dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Background).Task;
+
+    /// <summary>Applies a live step event of the reader to the result list and advances the overall progress.</summary>
+    private void ApplyStep(StepEvent e, int anchor)
+    {
+        // The entry an event refers to: the latest one with this Id that is not final yet (a provisional result may be replaced).
+        var open = ReadSteps.LastOrDefault(s => s.Id == e.Id && (s.State != StepState.Done || (e.State == StepState.Done && s.Provisional)));
+        switch (e.State)
+        {
+            case StepState.Pending:
+                if (open == null) ReadSteps.Add(new StepItem(e.Id, e.Name));
+                break;
+            case StepState.Running:
+                if (open == null) { open = new StepItem(e.Id, e.Name); ReadSteps.Add(open); }
+                if (open.State != StepState.Running)
+                {
+                    open.State = StepState.Running;
+                    open.LogAnchor = anchor;
+                    lastStepAnchor = anchor;
+                }
+                if (e.Detail != null) open.Detail = e.Detail;
+                if (e.Total > 0)
+                {
+                    open.ShowProgress = true;
+                    open.Progress = 100.0 * e.Done / e.Total;
+                    open.Detail = T($"{e.Done} / {e.Total} Byte", $"{e.Done} / {e.Total} bytes");
+                }
+                break;
+            case StepState.Done when e.Step != null:
+                if (open == null) { open = new StepItem(e.Id, e.Name) { LogAnchor = lastStepAnchor }; ReadSteps.Add(open); }
+                else if (open.LogAnchor < 0) open.LogAnchor = lastStepAnchor;
+                open.Finish(e.Step, e.Provisional);
+                break;
+            case StepState.Removed:
+                var gone = ReadSteps.LastOrDefault(s => s.Id == e.Id);
+                if (gone != null) ReadSteps.Remove(gone);
+                break;
+        }
+        UpdateOverallProgress();
+    }
+
+    /// <summary>Overall progress: finished entries plus the byte share of a running file; it never moves backwards.</summary>
+    private void UpdateOverallProgress()
+    {
+        if (ReadSteps.Count == 0) return;
+        var value = 100.0 * ReadSteps.Sum(s => s.Fraction) / ReadSteps.Count;
+        if (value > ReadProgress) ReadProgress = value;
+    }
+
+    /// <summary>
+    /// End of an attempt: planned entries that were not needed disappear, a running one gets the error (or is closed
+    /// without result). Returns true if a running entry was marked as failed.
+    /// </summary>
+    private bool FinishOpenSteps(bool cancelled, string? error)
+    {
+        foreach (var p in ReadSteps.Where(s => s.State == StepState.Pending).ToList()) ReadSteps.Remove(p);
+        var marked = false;
+        foreach (var r in ReadSteps.Where(s => s.State == StepState.Running).ToList())
+        {
+            var outcome = cancelled ? StepOutcome.Skipped : error != null ? StepOutcome.Failed : StepOutcome.Warning;
+            r.Finish(new ReadStep(r.Name, outcome, error ?? T("ohne Ergebnis beendet", "ended without result")), provisional: false);
+            marked |= outcome == StepOutcome.Failed;
+        }
+        UpdateOverallProgress();
+        return marked;
+    }
+
+    /// <summary>Warm reset before another application is tried: back to the MF without an open SM session.</summary>
+    private void ResetCard()
+    {
+        try
+        {
+            transport?.Reset(cold: false);
+            Logger.Info(LogCategory.Reader, T("Warm-Reset vor dem Wechsel der Anwendung", "Warm reset before changing the application"), transport?.Atr);
+        }
+        catch (Exception ex) { Logger.Warning(LogCategory.Reader, T($"Reset fehlgeschlagen: {ex.Message}", $"Reset failed: {ex.Message}")); }
     }
 
     [RelayCommand(CanExecute = nameof(IsReading))]
@@ -219,7 +336,6 @@ public sealed partial class MainViewModel
         HasResult = true;
         RememberSetSource(() => DocumentSet.FromEmrtd(result, isIdl, UseCan ? Can : null), isIdl ? SetDocumentType.Idl : SetDocumentType.Icao,
             result.PassiveAuthentication?.Sod);
-        foreach (var s in result.Steps) ReadSteps.Add(s);
         foreach (var f in result.Files) FileNodes.Add(FileNode.FromFile(f, isIdl ? Idl.TagName : null));
         if (isIdl) { ShowIdlResult(result); SecurityReport = BuildSecurityReport(result); return; }
         DataPanelTitle = "DG1 – MRZ";

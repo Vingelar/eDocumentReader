@@ -1,4 +1,4 @@
-<Window x:Class="eDocumentReader.App.MainWindow"
+﻿<Window x:Class="eDocumentReader.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="clr-namespace:eDocumentReader.App.ViewModels"
@@ -13,6 +13,7 @@
             <Setter Property="Padding" Value="10,3" />
             <Setter Property="Margin" Value="3" />
         </Style>
+        <BooleanToVisibilityConverter x:Key="BoolVis" />
         <Style x:Key="Mono" TargetType="TextBox">
             <Setter Property="FontFamily" Value="Consolas" />
             <Setter Property="FontSize" Value="12" />
@@ -35,7 +36,8 @@
         <ToolBarTray DockPanel.Dock="Top">
             <ToolBar>
                 <TextBlock Text="{l:Tr 'Leser:', En='Reader:'}" VerticalAlignment="Center" Margin="3" />
-                <ComboBox Width="380" ItemsSource="{Binding Readers}" SelectedItem="{Binding SelectedReader}">
+                <ComboBox Width="380" ItemsSource="{Binding Readers}" SelectedItem="{Binding SelectedReader}"
+                          IsEnabled="{Binding IsReading, Converter={x:Static vm:InverseBoolConverter.Instance}}">
                     <ComboBox.ItemTemplate>
                         <DataTemplate>
                             <StackPanel Orientation="Horizontal">
@@ -162,23 +164,45 @@
                                 </StackPanel>
                             </GroupBox>
                             <GroupBox Header="{l:Tr 'Ergebnis', En='Result'}">
-                                <ItemsControl ItemsSource="{Binding ReadSteps}" Margin="4">
-                                    <ItemsControl.ItemTemplate>
+                                <ListBox x:Name="StepList" ItemsSource="{Binding ReadSteps}" Margin="4" BorderThickness="0"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled" MouseLeftButtonUp="StepList_MouseLeftButtonUp"
+                                         ToolTip="{l:Tr 'Klick auf einen Eintrag: zugehörige Stelle im Log anzeigen', En='Click an entry: show its place in the log'}">
+                                    <ListBox.ItemContainerStyle>
+                                        <Style TargetType="ListBoxItem">
+                                            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                            <Setter Property="Padding" Value="1" />
+                                        </Style>
+                                    </ListBox.ItemContainerStyle>
+                                    <ListBox.ItemTemplate>
                                         <DataTemplate>
                                             <Grid Margin="0,1">
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="18" />
                                                     <ColumnDefinition Width="*" />
                                                 </Grid.ColumnDefinitions>
-                                                <TextBlock FontWeight="Bold" Text="{Binding Outcome, Converter={x:Static vm:StepOutcomeConverter.Instance}}"
-                                                           Foreground="{Binding Outcome, Converter={x:Static vm:StepOutcomeConverter.Instance}, ConverterParameter=brush}" />
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="Auto" />
+                                                </Grid.RowDefinitions>
+                                                <TextBlock FontWeight="Bold" Text="{Binding Symbol}" Foreground="{Binding SymbolBrush}" />
                                                 <TextBlock Grid.Column="1" TextWrapping="Wrap">
-                                                    <Run Text="{Binding Name, Mode=OneWay}" FontWeight="SemiBold" /><Run Text=": " /><Run Text="{Binding Detail, Mode=OneWay}" />
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding IsPending}" Value="True">
+                                                                    <Setter Property="Foreground" Value="Gray" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                    <Run Text="{Binding Name, Mode=OneWay}" FontWeight="SemiBold" /><Run Text="{Binding DetailText, Mode=OneWay}" />
                                                 </TextBlock>
+                                                <ProgressBar Grid.Row="1" Grid.Column="1" Height="6" Margin="0,2,0,1" Maximum="100" Value="{Binding Progress, Mode=OneWay}"
+                                                             Visibility="{Binding ShowProgress, Converter={StaticResource BoolVis}}" />
                                             </Grid>
                                         </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
                             </GroupBox>
                         </DockPanel>
 

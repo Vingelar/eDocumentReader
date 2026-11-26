@@ -55,6 +55,21 @@ public sealed record ReadStep(string Name, StepOutcome Outcome, string Detail)
 
 public sealed record ReadProgress(string Stage, string? File = null, int Done = 0, int Total = 0);
 
+public enum StepState { Pending, Running, Done, Removed }
+
+/// <summary>
+/// Live view of the inspection for a UI: steps are planned (Pending), started (Running, with byte counts for files),
+/// finished (Done) or dropped again (Removed, e.g. an IDL data group that does not exist). Provisional results exist
+/// only in the live view (e.g. a file read without error) and may be replaced by a later step with the same Id.
+/// </summary>
+public sealed record StepEvent(string Id, string Name, StepState State, ReadStep? Step = null, string? Detail = null, int Done = 0, int Total = 0, bool Provisional = false);
+
+/// <summary>The access control (PACE, BAC or BAP) failed; another application may still accept the key.</summary>
+public sealed class AccessControlException(string message, StatusWord? status, Exception inner) : Exception(message, inner)
+{
+    public StatusWord? Status { get; } = status;
+}
+
 public sealed record EmrtdFile(string Name, byte Sfi, int DataGroup, byte[] Data, ushort? Fid = null);
 
 public sealed class EmrtdReadResult
@@ -97,26 +112,33 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
     {
         var log = channel.Logger;
         var result = new EmrtdReadResult();
+        var accessName = T("Zugriffskontrolle", "Access control");
+        Plan(FileId("EF.CardAccess"), ReadName("EF.CardAccess"));
+        Plan("access", accessName);
+        Plan(FileId("EF.COM"), ReadName("EF.COM"));
 
         // 1. EF.CardAccess in the MF (9303-11 4.2, 9303-10 3.11.3)
         Report("EF.CardAccess");
+        Start(FileId("EF.CardAccess"), ReadName("EF.CardAccess"));
         List<PaceInfo> paceInfos = [];
         try
         {
             byte[] cardAccess;
-            try { cardAccess = new FileReader(channel) { Cancellation = ct }.ReadBySfi(Lds.SfiCardAccess, "EF.CardAccess"); }
+            try { cardAccess = new FileReader(channel) { Cancellation = ct, Progress = FileProgress }.ReadBySfi(Lds.SfiCardAccess, "EF.CardAccess"); }
             catch (FileReadException ex) when (ex.Status?.Value is 0x6987 or 0x6988)
             {
                 // SM session of an earlier connection still open (RF field not switched off); the chip ends it on this error (9303-11 9.8.5).
                 log.Info(LogCategory.Protocol, T("Chip war noch in einer SM-Sitzung – EF.CardAccess wird erneut gelesen.", "Chip was still in an SM session – reading EF.CardAccess again."));
-                cardAccess = new FileReader(channel) { Cancellation = ct }.ReadBySfi(Lds.SfiCardAccess, "EF.CardAccess");
+                cardAccess = new FileReader(channel) { Cancellation = ct, Progress = FileProgress }.ReadBySfi(Lds.SfiCardAccess, "EF.CardAccess");
             }
             result.Files.Add(new EmrtdFile("EF.CardAccess", Lds.SfiCardAccess, 0, cardAccess));
             paceInfos = SecurityInfos.Parse(cardAccess).OfType<PaceInfo>().ToList();
+            ReadDone("EF.CardAccess", cardAccess.Length);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             log.Info(LogCategory.Protocol, T($"EF.CardAccess nicht verfügbar ({ex.Message})", $"EF.CardAccess not available ({ex.Message})"));
+            Provisional(new ReadStep(ReadName("EF.CardAccess"), StepOutcome.NotSupported, T($"nicht verfügbar ({ex.Message})", $"not available ({ex.Message})")) { Key = FileId("EF.CardAccess") });
         }
 
         // 2. Access control: PACE (preferred) or BAC
@@ -126,9 +148,12 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
         PaceInfo? chosen = null;
         var camVerified = false;
         string? paceFailure = null;
+        try
+        {
         if (paceInfos.Count > 0 && (options.PreferPace || options.Key is AccessKey.CanKey))
         {
             Report("PACE");
+            Start("access", accessName, "PACE");
             var password = options.Key switch
             {
                 AccessKey.MrzKey m => PacePassword.FromMrz(m.MrzInformation),
@@ -147,7 +172,7 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
                 {
                     // A failed PACE-CAM run is repeated with generic mapping before any fallback to BAC (9303-11 4.2).
                     log.Warning(LogCategory.Protocol, T($"PACE-CAM fehlgeschlagen ({ex.Message}) – Wiederholung mit PACE-GM", $"PACE-CAM failed ({ex.Message}) – repeating with PACE-GM"));
-                    result.Steps.Add(new ReadStep("PACE-CAM", StepOutcome.Warning, T($"{ex.Message} – Wiederholung mit PACE-GM", $"{ex.Message} – repeated with PACE-GM")));
+                    AddStep(result, new ReadStep("PACE-CAM", StepOutcome.Warning, T($"{ex.Message} – Wiederholung mit PACE-GM", $"{ex.Message} – repeated with PACE-GM")));
                     chosen = gm;
                     pace = Pace.Perform(channel, chosen, password, includeParameterId: paceInfos.Count > 1);
                 }
@@ -169,7 +194,7 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
                 Report("EF.CardSecurity");
                 var step = VerifyChipAuthenticationMapping(pace, ReadFile(sm, Lds.SfiCardSecurity, "EF.CardSecurity", 0, result, ct));
                 camVerified = step.Outcome is StepOutcome.Success or StepOutcome.Warning;
-                result.Steps.Add(step);
+                AddStep(result, step);
             }
             Select(sm, options);
         }
@@ -177,29 +202,37 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
         {
             if (options.Key is not AccessKey.MrzKey mrz)
                 throw new ProtocolException(T("CAN ist nur mit PACE verwendbar, der Chip bietet in EF.CardAccess kein PACE an (ICAO 9303-11 4.4).", "CAN works with PACE only; the chip offers no PACE in EF.CardAccess (ICAO 9303-11 4.4)."));
-            if (paceFailure != null) result.Steps.Add(new ReadStep("PACE (MRZ)", StepOutcome.Warning, T($"{paceFailure} – Rückfall auf {(options.IsIdl ? "BAP" : "BAC")}", $"{paceFailure} – fallback to {(options.IsIdl ? "BAP" : "BAC")}")));
+            if (paceFailure != null) AddStep(result, new ReadStep("PACE (MRZ)", StepOutcome.Warning, T($"{paceFailure} – Rückfall auf {(options.IsIdl ? "BAP" : "BAC")}", $"{paceFailure} – fallback to {(options.IsIdl ? "BAP" : "BAC")}")));
             Report(options.IsIdl ? "BAP" : "BAC");
+            Start("access", accessName, options.IsIdl ? "BAP" : "BAC");
             Select(channel, options);
             sm = Bac.Perform(channel, mrz.MrzInformation);
             result.AccessControl = options.IsIdl ? T("BAP Konfiguration 1 (ISO/IEC 18013-3 8.2.3)", "BAP configuration 1 (ISO/IEC 18013-3 8.2.3)") : "BAC";
         }
-        result.Steps.Add(new ReadStep(T("Zugriffskontrolle", "Access control"), StepOutcome.Success, result.AccessControl) { Key = "access" });
+        }
+        catch (Exception ex) when (ex is ProtocolException or SecureMessagingException)
+        {
+            var status = ex switch { ProtocolException p => p.Status, SecureMessagingException s => s.Status, _ => null };
+            AddStep(result, new ReadStep(accessName, StepOutcome.Failed, ex.Message + (status is { } sw ? $" ({sw})" : "")) { Key = "access" });
+            throw new AccessControlException(ex.Message, status, ex);
+        }
+        AddStep(result, new ReadStep(accessName, StepOutcome.Success, result.AccessControl) { Key = "access" });
 
         // 3. EF.COM, EF.SOD and the data groups readable after BAC/PACE (all except EAC-protected DG3/DG4)
         var com = ReadFile(sm, Lds.SfiCom, "EF.COM", 0, result, ct) ?? throw new ProtocolException(T("EF.COM nicht lesbar.", "EF.COM not readable."));
         var tagList = BerTlv.ParseSingle(com).Find(0x5C)?.Value ?? [];
         // EF.COM tag list: eMRTD tags (ICAO 9303-10) or the IDL tags of ISO/IEC 18013-2 Table C.2.
         result.DataGroupsListed.AddRange(tagList.Select(t => options.IsIdl ? Idl.DataGroupNumber(t) : Lds.DataGroupNumber(t)).Where(d => d > 0).Distinct());
+        // ISO/IEC 18013-3 uses its own tag list in EF.COM; the SFI of EF.DGn is n (Table 12), so every DG is probed.
+        var dataGroups = options.IsIdl ? Enumerable.Range(1, 14).ToList() : result.DataGroupsListed.Where(d => !Lds.IsEacProtected(d)).ToList();
+        Plan(FileId("EF.SOD"), ReadName("EF.SOD"));
+        foreach (var dg in dataGroups) Plan(FileId($"EF.DG{dg}"), ReadName($"EF.DG{dg}"));
+        if (!camVerified) Plan("Chip Authentication", "Chip Authentication");
+        Plan("Active Authentication", "Active Authentication");
+        Plan("Passive Authentication", "Passive Authentication");
         var sod = ReadFile(sm, Lds.SfiSod, "EF.SOD", 0, result, ct);
-        if (options.IsIdl)
-        {
-            // ISO/IEC 18013-3 uses its own tag list in EF.COM; the SFI of EF.DGn is n (Table 12), so every DG is probed.
-            for (var dg = 1; dg <= 14; dg++)
-                ReadFile(sm, (byte)dg, $"EF.DG{dg}", dg, result, ct, absentIsNormal: true);
-        }
-        else
-            foreach (var dg in result.DataGroupsListed.Where(d => !Lds.IsEacProtected(d)))
-                ReadFile(sm, Lds.DataGroupSfi(dg), $"EF.DG{dg}", dg, result, ct);
+        foreach (var dg in dataGroups)
+            ReadFile(sm, options.IsIdl ? (byte)dg : Lds.DataGroupSfi(dg), $"EF.DG{dg}", dg, result, ct, absentIsNormal: options.IsIdl);
 
         // 4. Chip Authentication (DG14) unless PACE-CAM authenticated the chip, then Terminal Authentication (EF.CVCA +
         //    chain from the PKI store). After PACE-CAM, TA uses Comp(PK_DH,IFD) of PACE (ICAO 9303-11 7.1).
@@ -209,11 +242,12 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
             terminalKey = pace!.CompressedTerminalEphemeralKey;
             log.Info(LogCategory.Protocol, T("Chip Authentication mit DG14 entfällt: der Chip hat sich mit PACE-CAM authentisiert (ICAO 9303-11 4.4.3.3.3).", "Chip Authentication with DG14 not needed: the chip authenticated with PACE-CAM (ICAO 9303-11 4.4.3.3.3)."));
         }
-        else if (!options.ChipAuthentication) result.Steps.Add(new ReadStep("Chip Authentication", StepOutcome.Skipped, T("abgewählt", "deselected")));
-        else if (!result.DataGroups.TryGetValue(14, out var dg14)) result.Steps.Add(new ReadStep("Chip Authentication", StepOutcome.NotSupported, T("kein DG14", "no DG14")));
+        else if (!options.ChipAuthentication) AddStep(result, new ReadStep("Chip Authentication", StepOutcome.Skipped, T("abgewählt", "deselected")));
+        else if (!result.DataGroups.TryGetValue(14, out var dg14)) AddStep(result, new ReadStep("Chip Authentication", StepOutcome.NotSupported, T("kein DG14", "no DG14")));
         else
         {
             Report("Chip Authentication");
+            Start("Chip Authentication", "Chip Authentication");
             terminalKey = RunChipAuthentication(ref sm, dg14, result)?.CompressedTerminalKey;
         }
         if (terminalKey != null)
@@ -228,29 +262,31 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
                 if (options.TerminalAuthentication)
                 {
                     Report("Terminal Authentication");
-                    result.Steps.Add(RunTerminalAuthentication(sm, pace, options, terminalKey, protectedDgs, result, ct));
+                    Start("Terminal Authentication", "Terminal Authentication");
+                    AddStep(result, RunTerminalAuthentication(sm, pace, options, terminalKey, protectedDgs, result, ct));
                 }
-                else result.Steps.Add(new ReadStep("Terminal Authentication", StepOutcome.Skipped, T("abgewählt", "deselected")));
+                else AddStep(result, new ReadStep("Terminal Authentication", StepOutcome.Skipped, T("abgewählt", "deselected")));
             }
         }
 
         // 5. Active Authentication (DG15)
-        if (!options.ActiveAuthentication) result.Steps.Add(new ReadStep("Active Authentication", StepOutcome.Skipped, T("abgewählt", "deselected")));
+        if (!options.ActiveAuthentication) AddStep(result, new ReadStep("Active Authentication", StepOutcome.Skipped, T("abgewählt", "deselected")));
         // The AA public key is in DG15 (ICAO 9303-11 6.1) or, for the IDL, in DG13 (ISO/IEC 18013-3 Table 12).
-        else if (!result.DataGroups.TryGetValue(options.IsIdl ? 13 : 15, out var dg15)) result.Steps.Add(new ReadStep("Active Authentication", StepOutcome.NotSupported, options.IsIdl ? T("kein DG13", "no DG13") : T("kein DG15", "no DG15")));
+        else if (!result.DataGroups.TryGetValue(options.IsIdl ? 13 : 15, out var dg15)) AddStep(result, new ReadStep("Active Authentication", StepOutcome.NotSupported, options.IsIdl ? T("kein DG13", "no DG13") : T("kein DG15", "no DG15")));
         else
         {
             Report("Active Authentication");
+            Start("Active Authentication", "Active Authentication");
             try
             {
                 var key = ActiveAuthentication.PublicKeyFromDg15(dg15);
                 var aaInfo = result.DataGroups.TryGetValue(14, out var d14) ? SecurityInfos.Parse(BerTlv.ParseSingle(d14).Value).OfType<ActiveAuthenticationInfo>().FirstOrDefault() : null;
                 var aa = ActiveAuthentication.Perform(sm, key, aaInfo?.SignatureAlgorithm);
-                result.Steps.Add(new ReadStep("Active Authentication", aa.Valid ? StepOutcome.Success : StepOutcome.Failed, aa.Detail));
+                AddStep(result, new ReadStep("Active Authentication", aa.Valid ? StepOutcome.Success : StepOutcome.Failed, aa.Detail));
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                result.Steps.Add(new ReadStep("Active Authentication", StepOutcome.Failed, ex.Message));
+                AddStep(result, new ReadStep("Active Authentication", StepOutcome.Failed, ex.Message));
             }
         }
 
@@ -258,6 +294,7 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
         if (sod != null)
         {
             Report("Passive Authentication");
+            Start("Passive Authentication", "Passive Authentication");
             try
             {
                 var pa = PassiveAuthentication.Verify(sod, result.DataGroups, pki);
@@ -267,11 +304,11 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
                     : !pa.SignatureValid ? pa.SignatureDetail
                     : pa.Chain?.Valid != true ? T("DS-Zertifikat nicht bis zu einer vertrauenswürdigen CSCA prüfbar", "DS certificate cannot be verified up to a trusted CSCA")
                     : T("Hashes, SOD-Signatur und Kette DS → CSCA gültig", "Hashes, SOD signature and chain DS → CSCA valid");
-                result.Steps.Add(new ReadStep("Passive Authentication", pa.Valid ? StepOutcome.Success : StepOutcome.Failed, detail));
+                AddStep(result, new ReadStep("Passive Authentication", pa.Valid ? StepOutcome.Success : StepOutcome.Failed, detail));
             }
             catch (Exception ex)
             {
-                result.Steps.Add(new ReadStep("Passive Authentication", StepOutcome.Failed, ex.Message));
+                AddStep(result, new ReadStep("Passive Authentication", StepOutcome.Failed, ex.Message));
             }
         }
         Report(T("Fertig", "Done"));
@@ -279,6 +316,35 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
     }
 
     private void Report(string stage, string? file = null, int done = 0, int total = 0) => Progress?.Invoke(new ReadProgress(stage, file, done, total));
+
+    /// <summary>Live step view (see <see cref="StepEvent"/>); called on the reading thread.</summary>
+    public Action<StepEvent>? StepChanged { get; set; }
+
+    private static string FileId(string file) => "read:" + file;
+    private static string ReadName(string file) => T("Lesen ", "Read ") + file;
+    private void Plan(string id, string name) => StepChanged?.Invoke(new StepEvent(id, name, StepState.Pending));
+    private void Start(string id, string name, string? detail = null) => StepChanged?.Invoke(new StepEvent(id, name, StepState.Running, Detail: detail));
+    private void Provisional(ReadStep step) => StepChanged?.Invoke(new StepEvent(step.Id, step.Name, StepState.Done, step, Provisional: true));
+    private void Drop(string id) => StepChanged?.Invoke(new StepEvent(id, id, StepState.Removed));
+    private void ReadDone(string file, int length) => Provisional(new ReadStep(ReadName(file), StepOutcome.Success, T($"{length} Byte", $"{length} bytes")) { Key = FileId(file) });
+
+    private void FileProgress(string file, int done, int total)
+    {
+        Report(T("Lesen", "Reading"), file, done, total);
+        StepChanged?.Invoke(new StepEvent(FileId(file), ReadName(file), StepState.Running, Done: done, Total: total));
+    }
+
+    private void AddStep(EmrtdReadResult result, ReadStep step)
+    {
+        result.Steps.Add(step);
+        StepChanged?.Invoke(new StepEvent(step.Id, step.Name, StepState.Done, step));
+    }
+
+    private void RemoveStep(EmrtdReadResult result, ReadStep step)
+    {
+        result.Steps.Remove(step);
+        Drop(step.Id);
+    }
 
     private static void Select(IApduChannel c, EmrtdReadOptions options)
     {
@@ -290,27 +356,31 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
     {
         ct.ThrowIfCancellationRequested();
         Report(T("Lesen", "Reading"), name);
+        Start(FileId(name), ReadName(name));
         try
         {
-            var data = new FileReader(c) { Cancellation = ct, Progress = (n, done, total) => Report(T("Lesen", "Reading"), n, done, total) }.ReadBySfi(sfi, name);
+            var data = new FileReader(c) { Cancellation = ct, Progress = FileProgress }.ReadBySfi(sfi, name);
             result.Files.Add(new EmrtdFile(name, sfi, dg, data));
             if (dg > 0) result.DataGroups[dg] = data;
+            ReadDone(name, data.Length);
             return data;
         }
         catch (FileReadException ex) when (absentIsNormal && ex.Status?.Value == 0x6A82)
         {
+            Drop(FileId(name));
             return null;
         }
         catch (FileReadException ex) when (absentIsNormal && ex.Status?.Value == 0x6986)
         {
             // ISO/IEC 7816-4 7.2.2/5.6: a missing short EF is reported with 6A82; 6986 ("no current EF") is a deviation.
-            result.Steps.Add(new ReadStep(T($"Normkonformität {name}", $"Conformance {name}"), StepOutcome.Warning, T("READ BINARY mit SFI einer nicht vorhandenen Datei: 6986 statt 6A82 (ISO/IEC 7816-4)", "READ BINARY with the SFI of a missing file: 6986 instead of 6A82 (ISO/IEC 7816-4)")));
+            Drop(FileId(name));
+            AddStep(result, new ReadStep(T($"Normkonformität {name}", $"Conformance {name}"), StepOutcome.Warning, T("READ BINARY mit SFI einer nicht vorhandenen Datei: 6986 statt 6A82 (ISO/IEC 7816-4)", "READ BINARY with the SFI of a missing file: 6986 instead of 6A82 (ISO/IEC 7816-4)")));
             return null;
         }
         catch (FileReadException ex)
         {
             channel.Logger.Warning(LogCategory.Protocol, $"{name}: {ex.Message}");
-            result.Steps.Add(ReadStep.ReadFailed(name, ex.Message));
+            AddStep(result, ReadStep.ReadFailed(name, ex.Message));
             return null;
         }
     }
@@ -325,7 +395,7 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
             .OrderByDescending(x => x.Oid, StringComparer.Ordinal).FirstOrDefault();
         if (choice.Key == null)
         {
-            result.Steps.Add(new ReadStep("Chip Authentication", StepOutcome.NotSupported, T("kein ChipAuthenticationPublicKeyInfo in DG14", "no ChipAuthenticationPublicKeyInfo in DG14")));
+            AddStep(result, new ReadStep("Chip Authentication", StepOutcome.NotSupported, T("kein ChipAuthenticationPublicKeyInfo in DG14", "no ChipAuthenticationPublicKeyInfo in DG14")));
             return null;
         }
         try
@@ -335,14 +405,14 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
             // Proof that the new session keys work: read the EF.COM head again.
             var check = sm.Transmit(new CommandApdu(0x00, 0xB0, (byte)(0x80 | Lds.SfiCom), 0x00, null, 4), T("READ BINARY EF.COM (Kontrolle nach CA)", "READ BINARY EF.COM (check after CA)"));
             var detail = $"{Oids.Name(choice.Oid)}, KeyID {choice.Key.KeyId?.ToString() ?? "-"}";
-            result.Steps.Add(check.Status.IsSuccess
+            AddStep(result, check.Status.IsSuccess
                 ? new ReadStep("Chip Authentication", StepOutcome.Success, detail)
                 : new ReadStep("Chip Authentication", StepOutcome.Failed, T($"{detail}: Lesen nach Schlüsselwechsel {check.Status}", $"{detail}: read after key change {check.Status}")));
             return check.Status.IsSuccess ? ca : null;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            result.Steps.Add(new ReadStep("Chip Authentication", StepOutcome.Failed, ex.Message));
+            AddStep(result, new ReadStep("Chip Authentication", StepOutcome.Failed, ex.Message));
             return null;
         }
     }
@@ -417,7 +487,7 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
                 return new ReadStep(name, StepOutcome.Failed, T($"Kette über CAR {car}: {ex.Message}", $"Chain via CAR {car}: {ex.Message}"));
             }
             foreach (var finding in ta.Steps.Where(x => x.StartsWith('⚠')))
-                result.Steps.Add(new ReadStep(T("Normkonformität TA", "Conformance TA"), StepOutcome.Warning, finding.TrimStart('⚠', ' ')));
+                AddStep(result, new ReadStep(T("Normkonformität TA", "Conformance TA"), StepOutcome.Warning, finding.TrimStart('⚠', ' ')));
             if (!ta.Success)
             {
                 // IDL: trust point unknown, so a rejected chain (normally MSE:Set DST 6A88) is followed by the next candidate.
@@ -432,11 +502,11 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
             foreach (var dg in protectedDgs)
             {
                 var stale = result.Steps.FirstOrDefault(s => s.Id == $"read:EF.DG{dg}" && s.Outcome == StepOutcome.Failed);
-                if (stale != null) result.Steps.Remove(stale);
+                if (stale != null) RemoveStep(result, stale);
                 // Authorization bits of the IDL terminal certificate differ from the eMRTD role (18013-3 Annex); the chip decides.
                 if (!options.IsIdl && !terminal.Certificate.AllowsDataGroup(dg)) { log.Info(LogCategory.Protocol, T($"DG{dg}: Terminalzertifikat berechtigt nicht zum Lesen", $"DG{dg}: terminal certificate does not authorize reading")); continue; }
                 if (ReadFile(sm, Lds.DataGroupSfi(dg), $"EF.DG{dg}", dg, result, ct) is { } read)
-                    result.Steps.Add(new ReadStep(T($"Lesen EF.DG{dg}", $"Read EF.DG{dg}"), StepOutcome.Success, T($"{read.Length} Byte, nach Terminal Authentication", $"{read.Length} bytes, after Terminal Authentication")) { Key = $"read:EF.DG{dg}" });
+                    AddStep(result, new ReadStep(T($"Lesen EF.DG{dg}", $"Read EF.DG{dg}"), StepOutcome.Success, T($"{read.Length} Byte, nach Terminal Authentication", $"{read.Length} bytes, after Terminal Authentication")) { Key = $"read:EF.DG{dg}" });
             }
             return new ReadStep(name, StepOutcome.Success, T($"{terminal.Certificate.Chr} über CAR {car} ({terminal.Certificate.DescribeAuthorization()}; Anker aus {carSource})", $"{terminal.Certificate.Chr} via CAR {car} ({terminal.Certificate.DescribeAuthorization()}; trust point from {carSource})"));
         }
