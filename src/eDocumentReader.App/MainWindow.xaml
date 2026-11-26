@@ -333,8 +333,8 @@
                     </Grid>
                 </TabItem>
                 <TabItem Header="{l:Tr 'Sicherheit', En='Security'}">
-                    <TextBox Style="{StaticResource Mono}" Text="{Binding SecurityReport, Mode=OneWay}" IsReadOnly="True"
-                             VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" />
+                    <RichTextBox x:Name="SecurityBox" IsReadOnly="True" FontFamily="Consolas" FontSize="12" IsDocumentEnabled="False"
+                                 VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" />
                 </TabItem>
                 <TabItem Header="PKI">
                     <DockPanel Margin="4">
@@ -353,8 +353,8 @@
                     </DockPanel>
                 </TabItem>
                 <TabItem Header="{l:Tr 'Leser / Karte', En='Reader / card'}">
-                    <TextBox Style="{StaticResource Mono}" Text="{Binding CardInfo, Mode=OneWay}" IsReadOnly="True"
-                             VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" />
+                    <RichTextBox x:Name="CardInfoBox" IsReadOnly="True" FontFamily="Consolas" FontSize="12" IsDocumentEnabled="False"
+                                 VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" />
                 </TabItem>
                 <TabItem Header="{l:Tr 'APDU-Konsole', En='APDU console'}">
                     <DockPanel Margin="4">
@@ -390,7 +390,10 @@
                 <StackPanel DockPanel.Dock="Top" Orientation="Horizontal">
                     <TextBlock Text="{l:Tr 'Kommunikations- und Berechnungslog', En='Communication and computation log'}" FontWeight="Bold" VerticalAlignment="Center" Margin="4" />
                     <Button Content="{l:Tr 'Leeren', En='Clear'}" Command="{Binding ClearLogCommand}" />
-                    <Button Content="{l:Tr 'Speichern…', En='Save…'}" Command="{Binding SaveLogCommand}" />
+                    <Button Content="{l:Tr 'Speichern…', En='Save…'}" Command="{Binding SaveLogCommand}"
+                            ToolTip="{l:Tr 'Vollständiges Log (alle Stufen) speichern', En='Save the complete log (all levels)'}" />
+                    <Button Content="{l:Tr 'Gefiltert speichern…', En='Save filtered…'}" Command="{Binding SaveFilteredLogCommand}"
+                            ToolTip="{l:Tr 'Nur die mit den Logdetails ausgewählten Einträge speichern', En='Save only the entries selected with the log details'}" />
                 </StackPanel>
                 <ListBox x:Name="LogList" ItemsSource="{Binding LogEntries}" FontFamily="Consolas" FontSize="12"
                          VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling">

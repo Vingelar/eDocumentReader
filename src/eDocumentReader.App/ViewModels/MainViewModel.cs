@@ -185,7 +185,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         if (features.MaxApduDataSize is { } max) sb.AppendLine(T($"  dwMaxAPDUDataSize: {max} ({(max == 0 ? "nur kurze APDUs" : "Extended Length bis " + max + " Bytes")})", $"  dwMaxAPDUDataSize: {max} ({(max == 0 ? "short APDUs only" : "extended length up to " + max + " bytes")})"));
         if (features.FirmwareId is { } fw) sb.AppendLine($"  Firmware: {fw}");
         if (features.UsbVendorId is { } vid) sb.AppendLine($"  USB VID/PID: {vid:X4}/{features.UsbProductId:X4}");
-        sb.AppendLine(T($"  PACE im Leser: {(features.SupportsPace ? "ja" : "nein")}", $"  PACE in the reader: {(features.SupportsPace ? "yes" : "no")}"));
+        sb.AppendLine(T($"  {(features.SupportsPace ? "✔" : "–")} PACE im Leser: {(features.SupportsPace ? "ja" : "nein")}", $"  {(features.SupportsPace ? "✔" : "–")} PACE in the reader: {(features.SupportsPace ? "yes" : "no")}"));
         return sb.ToString();
     }
 
@@ -244,6 +244,17 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         var dlg = new Microsoft.Win32.SaveFileDialog { Filter = T("Textdatei|*.txt", "Text file|*.txt"), FileName = $"eDocumentReader_{DateTime.Now:yyyyMMdd_HHmmss}.log.txt" };
         if (dlg.ShowDialog() == true) File.WriteAllText(dlg.FileName, LogSink.ToText(), Encoding.UTF8);
+    }
+
+    /// <summary>Saves what the log view shows: everything recorded, filtered with the current display levels.</summary>
+    [RelayCommand]
+    private void SaveFilteredLog()
+    {
+        var dlg = new Microsoft.Win32.SaveFileDialog { Filter = T("Textdatei|*.txt", "Text file|*.txt"), FileName = $"eDocumentReader_{DateTime.Now:yyyyMMdd_HHmmss}.filtered.log.txt" };
+        if (dlg.ShowDialog() != true) return;
+        var levels = string.Join(", ", LogLevels.Select(l => $"{l.Category}={l.Level}"));
+        var lines = allLogEntries.Where(IsLogVisible).Select(e => e.Format()).Prepend(T($"# Gefiltertes Log ({levels})", $"# Filtered log ({levels})"));
+        File.WriteAllText(dlg.FileName, string.Join(Environment.NewLine, lines), Encoding.UTF8);
     }
 
     public void Dispose()

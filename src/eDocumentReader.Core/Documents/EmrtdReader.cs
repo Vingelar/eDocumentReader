@@ -62,7 +62,8 @@ public enum StepState { Pending, Running, Done, Removed }
 /// finished (Done) or dropped again (Removed, e.g. an IDL data group that does not exist). Provisional results exist
 /// only in the live view (e.g. a file read without error) and may be replaced by a later step with the same Id.
 /// </summary>
-public sealed record StepEvent(string Id, string Name, StepState State, ReadStep? Step = null, string? Detail = null, int Done = 0, int Total = 0, bool Provisional = false);
+/// <param name="Before">For a planned step: insert it before the planned step with this Id (if there is one).</param>
+public sealed record StepEvent(string Id, string Name, StepState State, ReadStep? Step = null, string? Detail = null, int Done = 0, int Total = 0, bool Provisional = false, string? Before = null);
 
 /// <summary>The access control (PACE, BAC or BAP) failed; another application may still accept the key.</summary>
 public sealed class AccessControlException(string message, StatusWord? status, Exception inner) : Exception(message, inner)
@@ -100,12 +101,15 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
     /// The eMRTD application is deliberately not selected here: afterwards SFI 1C would address EF.CVCA instead of
     /// EF.CardAccess in the MF. A failed SELECT leaves the current selection unchanged (ISO/IEC 7816-4 11.2.2).
     /// </summary>
-    public static DocumentApplication DetectApplication(IApduChannel c)
+    public static DocumentApplication DetectApplication(IApduChannel c) => Detect(c).Application;
+
+    /// <summary>As <see cref="DetectApplication"/>, with the status word of the SELECT for display.</summary>
+    public static (DocumentApplication Application, StatusWord Status) Detect(IApduChannel c)
     {
         var sw = c.Transmit(new CommandApdu(0x00, 0xA4, 0x04, 0x0C, IdlAid), T("SELECT IDL (Erkennung der Anwendung)", "SELECT IDL (application detection)")).Status;
         // 6987/6988: SM session of an earlier connection still open; the chip ends it on this error (9303-11 9.8.5) – repeat once.
         if (sw.Value is 0x6987 or 0x6988) sw = c.Transmit(new CommandApdu(0x00, 0xA4, 0x04, 0x0C, IdlAid), T("SELECT IDL (Erkennung, Wiederholung)", "SELECT IDL (detection, retry)")).Status;
-        return sw.IsSuccess ? DocumentApplication.Idl : DocumentApplication.Emrtd;
+        return (sw.IsSuccess ? DocumentApplication.Idl : DocumentApplication.Emrtd, sw);
     }
 
     public EmrtdReadResult Read(EmrtdReadOptions options, CancellationToken ct = default)
@@ -116,6 +120,10 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
         Plan(FileId("EF.CardAccess"), ReadName("EF.CardAccess"));
         Plan("access", accessName);
         Plan(FileId("EF.COM"), ReadName("EF.COM"));
+        Plan(FileId("EF.SOD"), ReadName("EF.SOD"));
+        Plan("Chip Authentication", "Chip Authentication");
+        Plan("Active Authentication", "Active Authentication");
+        Plan("Passive Authentication", "Passive Authentication");
 
         // 1. EF.CardAccess in the MF (9303-11 4.2, 9303-10 3.11.3)
         Report("EF.CardAccess");
@@ -148,9 +156,12 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
         PaceInfo? chosen = null;
         var camVerified = false;
         string? paceFailure = null;
+        var usePace = paceInfos.Count > 0 && (options.PreferPace || options.Key is AccessKey.CanKey);
+        // PACE runs in the MF before the SELECT of the application; BAC/BAP after it (9303-11 4.2/4.3).
+        Plan("select", SelectName(options), before: usePace ? FileId("EF.COM") : "access");
         try
         {
-        if (paceInfos.Count > 0 && (options.PreferPace || options.Key is AccessKey.CanKey))
+        if (usePace)
         {
             Report("PACE");
             Start("access", accessName, "PACE");
@@ -196,7 +207,7 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
                 camVerified = step.Outcome is StepOutcome.Success or StepOutcome.Warning;
                 AddStep(result, step);
             }
-            Select(sm, options);
+            Select(sm, options, result);
         }
         else
         {
@@ -205,7 +216,7 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
             if (paceFailure != null) AddStep(result, new ReadStep("PACE (MRZ)", StepOutcome.Warning, T($"{paceFailure} – Rückfall auf {(options.IsIdl ? "BAP" : "BAC")}", $"{paceFailure} – fallback to {(options.IsIdl ? "BAP" : "BAC")}")));
             Report(options.IsIdl ? "BAP" : "BAC");
             Start("access", accessName, options.IsIdl ? "BAP" : "BAC");
-            Select(channel, options);
+            Select(channel, options, result);
             sm = Bac.Perform(channel, mrz.MrzInformation);
             result.AccessControl = options.IsIdl ? T("BAP Konfiguration 1 (ISO/IEC 18013-3 8.2.3)", "BAP configuration 1 (ISO/IEC 18013-3 8.2.3)") : "BAC";
         }
@@ -225,11 +236,7 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
         result.DataGroupsListed.AddRange(tagList.Select(t => options.IsIdl ? Idl.DataGroupNumber(t) : Lds.DataGroupNumber(t)).Where(d => d > 0).Distinct());
         // ISO/IEC 18013-3 uses its own tag list in EF.COM; the SFI of EF.DGn is n (Table 12), so every DG is probed.
         var dataGroups = options.IsIdl ? Enumerable.Range(1, 14).ToList() : result.DataGroupsListed.Where(d => !Lds.IsEacProtected(d)).ToList();
-        Plan(FileId("EF.SOD"), ReadName("EF.SOD"));
-        foreach (var dg in dataGroups) Plan(FileId($"EF.DG{dg}"), ReadName($"EF.DG{dg}"));
-        if (!camVerified) Plan("Chip Authentication", "Chip Authentication");
-        Plan("Active Authentication", "Active Authentication");
-        Plan("Passive Authentication", "Passive Authentication");
+        foreach (var dg in dataGroups) Plan(FileId($"EF.DG{dg}"), ReadName($"EF.DG{dg}"), before: camVerified ? "Active Authentication" : "Chip Authentication");
         var sod = ReadFile(sm, Lds.SfiSod, "EF.SOD", 0, result, ct);
         foreach (var dg in dataGroups)
             ReadFile(sm, options.IsIdl ? (byte)dg : Lds.DataGroupSfi(dg), $"EF.DG{dg}", dg, result, ct, absentIsNormal: options.IsIdl);
@@ -322,9 +329,25 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
 
     private static string FileId(string file) => "read:" + file;
     private static string ReadName(string file) => T("Lesen ", "Read ") + file;
-    private void Plan(string id, string name) => StepChanged?.Invoke(new StepEvent(id, name, StepState.Pending));
+    private void Plan(string id, string name, string? before = null) => StepChanged?.Invoke(new StepEvent(id, name, StepState.Pending, Before: before));
     private void Start(string id, string name, string? detail = null) => StepChanged?.Invoke(new StepEvent(id, name, StepState.Running, Detail: detail));
-    private void Provisional(ReadStep step) => StepChanged?.Invoke(new StepEvent(step.Id, step.Name, StepState.Done, step, Provisional: true));
+    private void Provisional(ReadStep step)
+    {
+        StepChanged?.Invoke(new StepEvent(step.Id, step.Name, StepState.Done, step, Provisional: true));
+        Separator(step);
+    }
+
+    /// <summary>Separator line in the log after every step of the result list.</summary>
+    private void Separator(ReadStep step)
+    {
+        if (StepChanged != null) channel.Logger.Info(LogCategory.Application, SeparatorText(step));
+    }
+
+    public static string SeparatorText(ReadStep step)
+    {
+        var symbol = step.Outcome switch { StepOutcome.Success => "✔", StepOutcome.Failed => "✘", StepOutcome.Skipped => "–", StepOutcome.Warning => "⚠", _ => "○" };
+        return $"──────────────── {symbol} {step.Name}: {step.Detail} ────────────────";
+    }
     private void Drop(string id) => StepChanged?.Invoke(new StepEvent(id, id, StepState.Removed));
     private void ReadDone(string file, int length) => Provisional(new ReadStep(ReadName(file), StepOutcome.Success, T($"{length} Byte", $"{length} bytes")) { Key = FileId(file) });
 
@@ -338,6 +361,7 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
     {
         result.Steps.Add(step);
         StepChanged?.Invoke(new StepEvent(step.Id, step.Name, StepState.Done, step));
+        Separator(step);
     }
 
     private void RemoveStep(EmrtdReadResult result, ReadStep step)
@@ -346,10 +370,16 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
         Drop(step.Id);
     }
 
-    private static void Select(IApduChannel c, EmrtdReadOptions options)
+    private static string SelectName(EmrtdReadOptions options) => T($"SELECT {options.ApplicationName}-Anwendung", $"SELECT {options.ApplicationName} application");
+
+    private void Select(IApduChannel c, EmrtdReadOptions options, EmrtdReadResult result)
     {
-        var sel = c.Transmit(new CommandApdu(0x00, 0xA4, 0x04, 0x0C, options.Aid), T($"SELECT {options.ApplicationName}-Anwendung", $"SELECT {options.ApplicationName} application"));
-        if (!sel.Status.IsSuccess) throw new ProtocolException(T($"SELECT {options.ApplicationName}-Anwendung: {sel.Status} {sel.Status.Description}", $"SELECT {options.ApplicationName} application: {sel.Status} {sel.Status.Description}"), sel.Status);
+        var name = SelectName(options);
+        Start("select", name);
+        var sel = c.Transmit(new CommandApdu(0x00, 0xA4, 0x04, 0x0C, options.Aid), name);
+        AddStep(result, new ReadStep(name, sel.Status.IsSuccess ? StepOutcome.Success : StepOutcome.Failed,
+            $"AID {Hex.Of(options.Aid)}: {sel.Status} {sel.Status.Description}") { Key = "select" });
+        if (!sel.Status.IsSuccess) throw new ProtocolException($"{name}: {sel.Status} {sel.Status.Description}", sel.Status);
     }
 
     private byte[]? ReadFile(IApduChannel c, byte sfi, string name, int dg, EmrtdReadResult result, CancellationToken ct, bool absentIsNormal = false)

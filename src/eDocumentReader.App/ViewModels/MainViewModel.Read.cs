@@ -130,7 +130,7 @@ public sealed partial class MainViewModel
 
         IsReading = true;
         ClearResult();
-        ReadProgress = 0;
+        ResetOverallProgress();
         readCancellation = new CancellationTokenSource();
         var ct = readCancellation.Token;
         var channel = Channel;
@@ -139,12 +139,19 @@ public sealed partial class MainViewModel
         var fallback = false;
         try
         {
-            var application = ApplicationChoice switch
+            EmrtdReader.DocumentApplication application;
+            if (automatic)
             {
-                1 => EmrtdReader.DocumentApplication.Emrtd,
-                2 => EmrtdReader.DocumentApplication.Idl,
-                _ => await Task.Run(() => EmrtdReader.DetectApplication(channel), ct),
-            };
+                var detectAnchor = LogSink.Count;
+                var (detected, sw) = await Task.Run(() => EmrtdReader.Detect(channel), ct);
+                application = detected;
+                AddFinishedStep(new ReadStep(T("SELECT IDL-Anwendung (Erkennung)", "SELECT IDL application (detection)"),
+                    detected == EmrtdReader.DocumentApplication.Idl ? StepOutcome.Success : StepOutcome.Skipped,
+                    detected == EmrtdReader.DocumentApplication.Idl
+                        ? T($"{sw}: IDL-Anwendung vorhanden", $"{sw}: IDL application present")
+                        : T($"{sw} {sw.Description}: keine IDL-Anwendung → eMRTD", $"{sw} {sw.Description}: no IDL application → eMRTD")), detectAnchor);
+            }
+            else application = ApplicationChoice == 2 ? EmrtdReader.DocumentApplication.Idl : EmrtdReader.DocumentApplication.Emrtd;
             ReadStage = T("PKI-Speicher laden", "Loading the PKI store");
             pki ??= await Task.Run(() => new PkiStore());
             while (true)
@@ -187,7 +194,7 @@ public sealed partial class MainViewModel
                     FinishOpenSteps(cancelled: false, ex.Message);
                     var anchor = LogSink.Count;
                     Logger.Warning(LogCategory.Application, T($"IDL-Anwendung: Zugriffskontrolle fehlgeschlagen ({ex.Message}) – Versuch mit der eMRTD-Anwendung und demselben Schlüssel", $"IDL application: access control failed ({ex.Message}) – trying the eMRTD application with the same key"));
-                    ReadSteps.Add(StepItem.From(new ReadStep(T("Anwendung", "Application"), StepOutcome.Warning, T("IDL lehnt den Schlüssel ab – Versuch mit eMRTD (ICAO 9303)", "IDL rejects the key – trying eMRTD (ICAO 9303)")), anchor));
+                    AddFinishedStep(new ReadStep(T("Anwendung", "Application"), StepOutcome.Warning, T("IDL lehnt den Schlüssel ab – Versuch mit eMRTD (ICAO 9303)", "IDL rejects the key – trying eMRTD (ICAO 9303)")), anchor);
                     ResetCard();
                     application = EmrtdReader.DocumentApplication.Emrtd;
                     continue;
@@ -217,7 +224,7 @@ public sealed partial class MainViewModel
             await FlushStepEvents();
             // The reader already marked a failed access control; otherwise the running entry gets the error.
             if (!FinishOpenSteps(cancelled: false, ex.Message + sw) && ex is not AccessControlException)
-                ReadSteps.Add(StepItem.From(new ReadStep(T("Lesen", "Read"), StepOutcome.Failed, ex.Message + sw), lastStepAnchor));
+                AddFinishedStep(new ReadStep(T("Lesen", "Read"), StepOutcome.Failed, ex.Message + sw), lastStepAnchor);
         }
         finally
         {
@@ -241,10 +248,13 @@ public sealed partial class MainViewModel
         switch (e.State)
         {
             case StepState.Pending:
-                if (open == null) ReadSteps.Add(new StepItem(e.Id, e.Name));
+                if (open != null) break;
+                var before = e.Before == null ? null : ReadSteps.FirstOrDefault(s => s.Id == e.Before && s.State == StepState.Pending);
+                if (before != null) ReadSteps.Insert(ReadSteps.IndexOf(before), new StepItem(e.Id, e.Name));
+                else ReadSteps.Add(new StepItem(e.Id, e.Name));
                 break;
             case StepState.Running:
-                if (open == null) { open = new StepItem(e.Id, e.Name); ReadSteps.Add(open); }
+                if (open == null) { open = new StepItem(e.Id, e.Name); InsertBeforeTodo(open); }
                 if (open.State != StepState.Running)
                 {
                     open.State = StepState.Running;
@@ -260,7 +270,7 @@ public sealed partial class MainViewModel
                 }
                 break;
             case StepState.Done when e.Step != null:
-                if (open == null) { open = new StepItem(e.Id, e.Name) { LogAnchor = lastStepAnchor }; ReadSteps.Add(open); }
+                if (open == null) { open = new StepItem(e.Id, e.Name) { LogAnchor = lastStepAnchor }; InsertBeforeTodo(open); }
                 else if (open.LogAnchor < 0) open.LogAnchor = lastStepAnchor;
                 open.Finish(e.Step, e.Provisional);
                 break;
@@ -272,12 +282,46 @@ public sealed partial class MainViewModel
         UpdateOverallProgress();
     }
 
-    /// <summary>Overall progress: finished entries plus the byte share of a running file; it never moves backwards.</summary>
+    // Overall progress: every finished entry advances the bar by its share of what was still open when the
+    // list last changed its length (new todo entries, data groups that do not exist), so it never moves backwards.
+    private double progressBase;
+    private double openAtBase;
+    private int countAtBase;
+
+    private void ResetOverallProgress()
+    {
+        ReadProgress = progressBase = openAtBase = 0;
+        countAtBase = 0;
+    }
+
     private void UpdateOverallProgress()
     {
-        if (ReadSteps.Count == 0) return;
-        var value = 100.0 * ReadSteps.Sum(s => s.Fraction) / ReadSteps.Count;
-        if (value > ReadProgress) ReadProgress = value;
+        var open = ReadSteps.Sum(s => 1 - s.Fraction);
+        if (ReadSteps.Count != countAtBase)
+        {
+            progressBase = ReadProgress;
+            openAtBase = open;
+            countAtBase = ReadSteps.Count;
+        }
+        if (openAtBase <= 0) return;
+        var value = progressBase + (100 - progressBase) * (1 - open / openAtBase);
+        if (value > ReadProgress) ReadProgress = Math.Min(value, 100);
+    }
+
+    /// <summary>Finished and running entries go before the todo entries, in the order they happen.</summary>
+    private void InsertBeforeTodo(StepItem item)
+    {
+        var todo = ReadSteps.FirstOrDefault(s => s.State == StepState.Pending);
+        if (todo != null) ReadSteps.Insert(ReadSteps.IndexOf(todo), item);
+        else ReadSteps.Add(item);
+    }
+
+    /// <summary>A step of the view model itself (detection, fallback, error): result list and separator line in the log.</summary>
+    private void AddFinishedStep(ReadStep step, int anchor)
+    {
+        InsertBeforeTodo(StepItem.From(step, anchor));
+        Logger.Info(LogCategory.Application, EmrtdReader.SeparatorText(step));
+        UpdateOverallProgress();
     }
 
     /// <summary>
@@ -291,7 +335,9 @@ public sealed partial class MainViewModel
         foreach (var r in ReadSteps.Where(s => s.State == StepState.Running).ToList())
         {
             var outcome = cancelled ? StepOutcome.Skipped : error != null ? StepOutcome.Failed : StepOutcome.Warning;
-            r.Finish(new ReadStep(r.Name, outcome, error ?? T("ohne Ergebnis beendet", "ended without result")), provisional: false);
+            var step = new ReadStep(r.Name, outcome, error ?? T("ohne Ergebnis beendet", "ended without result"));
+            r.Finish(step, provisional: false);
+            Logger.Info(LogCategory.Application, EmrtdReader.SeparatorText(step));
             marked |= outcome == StepOutcome.Failed;
         }
         UpdateOverallProgress();

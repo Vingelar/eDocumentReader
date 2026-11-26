@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using eDocumentReader.Core.Util;
 
 namespace eDocumentReader.Core.Transport;
@@ -213,9 +213,10 @@ public sealed class AtrInfo
         sb.AppendLine(T($"Protokolle: {string.Join(", ", Protocols.Select(p => "T=" + p))}", $"Protocols: {string.Join(", ", Protocols.Select(p => "T=" + p))}"));
         sb.AppendLine(T($"Historische Bytes: {Hex.Of(HistoricalBytes)}", $"Historical bytes: {Hex.Of(HistoricalBytes)}"));
         foreach (var o in HistoricalObjects) sb.AppendLine($"  {o.Tag:X2}: {Hex.Of(o.Value)}  {o.Meaning}");
-        if (Tck.HasValue) sb.AppendLine(T($"TCK = {Tck:X2} ({(TckValid == true ? "gültig" : "UNGÜLTIG")})", $"TCK = {Tck:X2} ({(TckValid == true ? "valid" : "INVALID")})"));
+        if (Tck.HasValue) sb.AppendLine(T($"{(TckValid == true ? "✔" : "✘")} TCK = {Tck:X2} ({(TckValid == true ? "gültig" : "UNGÜLTIG")})", $"{(TckValid == true ? "✔" : "✘")} TCK = {Tck:X2} ({(TckValid == true ? "valid" : "INVALID")})"));
         if (IsPcscContactless) sb.AppendLine(IsPcscContactlessStorageCard ? T("Kontaktlose Speicherkarte (PC/SC Part 3)", "Contactless memory card (PC/SC Part 3)") : T("Kontaktlose ISO/IEC 14443-4-Karte (PC/SC Part 3 ATR-Abbildung)", "Contactless ISO/IEC 14443-4 card (PC/SC Part 3 ATR mapping)"));
         foreach (var f in Findings) sb.AppendLine("⚠ " + f);
+        if (Findings.Count == 0) sb.AppendLine(T("✔ ATR ohne Befund (ISO/IEC 7816-3)", "✔ ATR without findings (ISO/IEC 7816-3)"));
         return sb.ToString();
     }
 }
