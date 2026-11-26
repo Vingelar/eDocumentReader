@@ -1,4 +1,4 @@
-using eDocumentReader.Core.Apdu;
+﻿using eDocumentReader.Core.Apdu;
 using eDocumentReader.Core.Logging;
 using eDocumentReader.Core.Tlv;
 using eDocumentReader.Core.Transport;
@@ -32,6 +32,31 @@ public sealed class FileReader(IApduChannel channel)
         if (!head.Status.IsCompleted || head.Data.Length == 0)
             throw new FileReadException($"{name}: {head.Status} {head.Status.Description}", head.Status);
         return ReadRemaining(head.Data, name);
+    }
+
+    /// <summary>
+    /// Reads a transparent EF with several data objects (EF.ATR/INFO, EF.DIR): READ BINARY with SFI, then further
+    /// READ BINARY until a short answer, '6282' (end of file) or '6B00' (offset beyond the end, ISO/IEC 7816-4 Table 6).
+    /// </summary>
+    public byte[] ReadWholeBySfi(byte sfi, string name)
+    {
+        Channel.Logger.Info(LogCategory.Protocol, T($"Lese {name} (SFI {sfi:X2})", $"Reading {name} (SFI {sfi:X2})"));
+        var first = Channel.Transmit(new CommandApdu(0x00, 0xB0, (byte)(0x80 | sfi), 0x00, null, MaxChunk), $"READ BINARY {name} (SFI {sfi:X2})");
+        if (!first.Status.IsCompleted || first.Data.Length == 0)
+            throw new FileReadException($"{name}: {first.Status} {first.Status.Description}", first.Status);
+        var data = new List<byte>(first.Data);
+        var last = first;
+        while (last.Data.Length == MaxChunk && last.Status.Value != 0x6282 && data.Count <= 0x7FFF - MaxChunk)
+        {
+            Cancellation.ThrowIfCancellationRequested();
+            last = Channel.Transmit(new CommandApdu(0x00, 0xB0, (byte)(data.Count >> 8), (byte)data.Count, null, MaxChunk), $"READ BINARY {name} @{data.Count}");
+            if (last.Status.Value == 0x6B00) break;
+            if (!last.Status.IsCompleted) throw new FileReadException($"{name}: READ BINARY @{data.Count}: {last.Status} {last.Status.Description}", last.Status);
+            data.AddRange(last.Data);
+        }
+        Progress?.Invoke(name, data.Count, data.Count);
+        Channel.Logger.Detail(LogCategory.Protocol, T($"{name}: {data.Count} Bytes gelesen", $"{name}: {data.Count} bytes read"));
+        return [.. data];
     }
 
     /// <summary>Reads a small EF without TLV structure (e.g. EF.CVCA) with a single READ BINARY, Le = 256.</summary>

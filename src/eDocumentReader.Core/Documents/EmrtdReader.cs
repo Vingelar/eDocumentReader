@@ -114,6 +114,10 @@ public sealed class EmrtdReadResult
     public EmrtdReader.DocumentApplication Application { get; set; }
     public bool IsIdl => Application == EmrtdReader.DocumentApplication.Idl;
     public string? AccessControl { get; set; }
+    /// <summary>EF.ATR/INFO of the MF, if present (ICAO 9303-10 3.11.1).</summary>
+    public AtrInfoFile? AtrInfo { get; set; }
+    /// <summary>EF.DIR of the MF, if present (ICAO 9303-10 3.11.2).</summary>
+    public EfDirFile? Dir { get; set; }
 
     public byte[]? File(string name) => Files.FirstOrDefault(f => f.Name == name)?.Data;
 }
@@ -151,6 +155,8 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
         var result = new EmrtdReadResult();
         var accessName = T("Zugriffskontrolle", "Access control");
         Plan(FileId("EF.CardAccess"), ReadName("EF.CardAccess"));
+        Plan(FileId(CardFiles.DirName), ReadName(CardFiles.DirName));
+        Plan(FileId(CardFiles.AtrInfoName), ReadName(CardFiles.AtrInfoName));
         Plan("access", accessName);
         Plan(FileId("EF.COM"), ReadName("EF.COM"));
         Plan(FileId("EF.SOD"), ReadName("EF.SOD"));
@@ -186,6 +192,52 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
         {
             log.Info(LogCategory.Protocol, T($"EF.CardAccess nicht verfügbar ({ex.Message})", $"EF.CardAccess not available ({ex.Message})"));
             Provisional(new ReadStep(ReadName("EF.CardAccess"), StepOutcome.NotSupported, T($"nicht verfügbar ({ex.Message})", $"not available ({ex.Message})")) { Key = FileId("EF.CardAccess") });
+        }
+
+        // 1a. EF.DIR and EF.ATR/INFO in the MF, still before any SELECT (9303-10 3.11.1/3.11.2, ISO/IEC 7816-4 8.2.1.1).
+        //     Both are optional for LDS1; EF.DIR is step 2 of 9303-11 4.2. '6A82' is the normal answer of a chip without them.
+        atrInfo = null;
+        var dirData = ReadMfFile(CardFiles.SfiDir, CardFiles.FidDir, CardFiles.DirName, result, ct);
+        if (dirData != null)
+        {
+            try
+            {
+                result.Dir = new EfDirFile(dirData);
+                foreach (var f in result.Dir.Findings) AddStep(result, new ReadStep(T($"Normkonformität {CardFiles.DirName}", $"Conformance {CardFiles.DirName}"), StepOutcome.Warning, f));
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                AddStep(result, new ReadStep(T($"Normkonformität {CardFiles.DirName}", $"Conformance {CardFiles.DirName}"), StepOutcome.Warning, T($"nicht dekodierbar: {ex.Message}", $"cannot be decoded: {ex.Message}")));
+            }
+        }
+        var atrData = ReadMfFile(CardFiles.SfiAtrInfo, CardFiles.FidAtrInfo, CardFiles.AtrInfoName, result, ct);
+        if (atrData != null)
+        {
+            try
+            {
+                atrInfo = result.AtrInfo = new AtrInfoFile(atrData);
+                var buffers = atrInfo.MaxCommandApdu is { } mc ? T($", Puffer {mc}/{atrInfo.MaxResponseApdu} Byte", $", buffers {mc}/{atrInfo.MaxResponseApdu} bytes") : "";
+                log.Info(LogCategory.Protocol, T($"{CardFiles.AtrInfoName}: Command chaining {(atrInfo.CommandChaining ? "ja" : "nein")}, Extended Lc/Le {(atrInfo.ExtendedLength ? "ja" : "nein")}{buffers}", $"{CardFiles.AtrInfoName}: command chaining {(atrInfo.CommandChaining ? "yes" : "no")}, extended Lc/Le {(atrInfo.ExtendedLength ? "yes" : "no")}{buffers}"), null, "ICAO 9303-11 9.3.1");
+                foreach (var f in atrInfo.Findings) AddStep(result, new ReadStep(T($"Normkonformität {CardFiles.AtrInfoName}", $"Conformance {CardFiles.AtrInfoName}"), StepOutcome.Warning, f));
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                AddStep(result, new ReadStep(T($"Normkonformität {CardFiles.AtrInfoName}", $"Conformance {CardFiles.AtrInfoName}"), StepOutcome.Warning, T($"nicht dekodierbar: {ex.Message}", $"cannot be decoded: {ex.Message}")));
+            }
+        }
+        // Automatic detection: only the applications that EF.DIR lists are tried. The order in EF.DIR has no meaning
+        // (9303-10 3.11.2: templates in any order), so the configured preference stays.
+        if (result.Dir is { Applications.Count: > 0 } dir && candidates.Count > 1)
+        {
+            var listed = candidates.Where(c => dir.Lists(options.For(c).Aid)).ToList();
+            if (listed.Count > 0 && listed.Count < candidates.Count)
+            {
+                var names = string.Join(", ", listed.Select(c => options.For(c).ApplicationName));
+                log.Info(LogCategory.Protocol, T($"EF.DIR listet nur {names} – andere Anwendungen werden nicht versucht", $"EF.DIR lists only {names} – other applications are not tried"));
+                candidates = listed;
+                options = options.For(candidates[0]);
+                result.Application = candidates[0];
+            }
         }
 
         // 2. Access control: PACE (preferred) or BAC
@@ -247,6 +299,9 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
                 camVerified = step.Outcome is StepOutcome.Success or StepOutcome.Warning;
                 AddStep(result, step);
             }
+            // EF.DIR read: its authenticity MUST be verified with EFDIRInfo in EF.CardSecurity (9303-11 4.2 step 2, 9.2.10),
+            // in the MF before the SELECT of the application.
+            if (dirData != null) AddStep(result, VerifyEfDir(sm, dirData, result, ct));
             // PACE is application independent; the application is selected under secure messaging afterwards
             // (9303-11 4.2, ISO/IEC 18013-3 8.7.4 d).
             options = SelectApplication(sm, candidates, options, result);
@@ -279,6 +334,8 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
                 }
             }
             result.AccessControl = options.IsIdl ? T("BAP Konfiguration 1 (ISO/IEC 18013-3 8.2.3)", "BAP configuration 1 (ISO/IEC 18013-3 8.2.3)") : "BAC";
+            if (dirData != null)
+                AddStep(result, new ReadStep(T("Echtheit EF.DIR", "Authenticity of EF.DIR"), StepOutcome.Warning, T("ohne PACE nicht prüfbar: EFDIRInfo steht in EF.CardSecurity im MF (ICAO 9303-11 4.2, 9.2.10)", "cannot be verified without PACE: EFDIRInfo is in EF.CardSecurity in the MF (ICAO 9303-11 4.2, 9.2.10)")));
         }
         }
         catch (Exception ex) when (ex is ProtocolException or SecureMessagingException)
@@ -467,6 +524,80 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
         throw new ProtocolException($"{name}: {sel.Status} {sel.Status.Description}", sel.Status);
     }
 
+    private AtrInfoFile? atrInfo;
+
+    /// <summary>
+    /// Block size for PSO:Verify Certificate (TA). An explicit option wins; otherwise EF.ATR/INFO decides: extended
+    /// length beyond MSE:Set KAT / GENERAL AUTHENTICATE only with stated buffer sizes (9303-11 9.3.1.2), command chaining
+    /// only if the chip indicates it (9.3.2). Without EF.ATR/INFO the former rule stays (chaining for the IDL).
+    /// </summary>
+    private int? MaxCommandData(EmrtdReadOptions options)
+    {
+        if (options.CommandChaining.HasValue || atrInfo == null) return options.MaxCommandData;
+        // Headroom for the APDU header, extended Lc/Le, DO'87' with padding, DO'97' and DO'8E'.
+        const int smOverhead = 64;
+        if (atrInfo.BufferSizesStated)
+            return atrInfo.CommandChaining ? Math.Max(options.ChainingBlockSize, atrInfo.MaxCommandApdu!.Value - smOverhead) : null;
+        if (atrInfo.CommandChaining) return options.ChainingBlockSize;
+        channel.Logger.Warning(LogCategory.Protocol, T("EF.ATR/INFO zeigt weder Command chaining noch Puffergrößen für Extended Length an – PSO:Verify Certificate wird ungeteilt gesendet", "EF.ATR/INFO indicates neither command chaining nor buffer sizes for extended length – PSO:Verify Certificate is sent in one piece"), null, "ICAO 9303-11 9.3.1.2, 9.3.2");
+        return null;
+    }
+
+    /// <summary>EF.ATR/INFO or EF.DIR in the MF, unprotected by SFI; '6A82' means: not present (optional).</summary>
+    private byte[]? ReadMfFile(byte sfi, ushort fid, string name, EmrtdReadResult result, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        Report(T("Lesen", "Reading"), name);
+        Start(FileId(name), ReadName(name));
+        try
+        {
+            var data = new FileReader(channel) { Cancellation = ct, Progress = FileProgress }.ReadWholeBySfi(sfi, name);
+            result.Files.Add(new EmrtdFile(name, sfi, 0, data, fid));
+            ReadDone(name, data.Length);
+            return data;
+        }
+        catch (FileReadException ex) when (ex.Status?.Value == 0x6A82)
+        {
+            channel.Logger.Info(LogCategory.Protocol, T($"{name}: optional, nicht vorhanden (6A82)", $"{name}: optional, not present (6A82)"), null, "ICAO 9303-10 3.11");
+            Provisional(new ReadStep(ReadName(name), StepOutcome.NotSupported, T("optional, nicht vorhanden (6A82)", "optional, not present (6A82)")) { Key = FileId(name) });
+            return null;
+        }
+        catch (FileReadException ex)
+        {
+            channel.Logger.Warning(LogCategory.Protocol, $"{name}: {ex.Message}");
+            Provisional(new ReadStep(ReadName(name), StepOutcome.Warning, ex.Message) { Key = FileId(name) });
+            return null;
+        }
+    }
+
+    /// <summary>EF.DIR = EFDIRInfo of EF.CardSecurity, and EF.CardSecurity signed by a DS of a trusted CSCA (9303-11 9.2.10).</summary>
+    private ReadStep VerifyEfDir(IApduChannel sm, byte[] dir, EmrtdReadResult result, CancellationToken ct)
+    {
+        var name = T("Echtheit EF.DIR", "Authenticity of EF.DIR");
+        var data = result.File("EF.CardSecurity") ?? ReadFile(sm, Lds.SfiCardSecurity, "EF.CardSecurity", 0, result, ct);
+        if (data == null)
+            return new ReadStep(name, StepOutcome.Warning, T("nicht prüfbar: EF.CardSecurity nicht lesbar (ICAO 9303-11 4.2)", "cannot be verified: EF.CardSecurity not readable (ICAO 9303-11 4.2)"));
+        try
+        {
+            var cardSecurity = new CardSecurity(data);
+            var info = cardSecurity.Infos.OfType<EfDirInfo>().FirstOrDefault();
+            if (info == null)
+                return new ReadStep(name, StepOutcome.Failed, T("EF.CardSecurity enthält kein EFDIRInfo (ICAO 9303-11 9.2.11, 9303-10 3.11.2)", "EF.CardSecurity contains no EFDIRInfo (ICAO 9303-11 9.2.11, 9303-10 3.11.2)"));
+            if (!info.Content.AsSpan().SequenceEqual(dir))
+                return new ReadStep(name, StepOutcome.Failed, T($"EF.DIR ({dir.Length} Byte) ≠ EFDIRInfo ({info.Content.Length} Byte) – EF.DIR nicht authentisch", $"EF.DIR ({dir.Length} bytes) ≠ EFDIRInfo ({info.Content.Length} bytes) – EF.DIR not authentic"));
+            var check = cardSecurity.Verify(pki);
+            if (!check.SignatureValid)
+                return new ReadStep(name, StepOutcome.Failed, T($"EF.DIR = EFDIRInfo, aber EF.CardSecurity: {check.SignatureDetail}", $"EF.DIR = EFDIRInfo, but EF.CardSecurity: {check.SignatureDetail}"));
+            return check.Valid
+                ? new ReadStep(name, StepOutcome.Success, T("EF.DIR = EFDIRInfo, EF.CardSecurity signiert, Kette DS → CSCA gültig", "EF.DIR = EFDIRInfo, EF.CardSecurity signed, chain DS → CSCA valid"))
+                : new ReadStep(name, StepOutcome.Warning, T("EF.DIR = EFDIRInfo, EF.CardSecurity signiert; DS nicht bis zu einer vertrauenswürdigen CSCA prüfbar", "EF.DIR = EFDIRInfo, EF.CardSecurity signed; DS cannot be verified up to a trusted CSCA"));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return new ReadStep(name, StepOutcome.Failed, T($"EF.CardSecurity ungültig ({ex.Message})", $"EF.CardSecurity invalid ({ex.Message})"));
+        }
+    }
+
     private byte[]? ReadFile(IApduChannel c, byte sfi, string name, int dg, EmrtdReadResult result, CancellationToken ct, bool absentIsNormal = false)
     {
         ct.ThrowIfCancellationRequested();
@@ -596,7 +727,7 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
             else if (key is AccessKey.MrzKey m) idPicc = TerminalAuthentication.StaticIdPicc(m.MrzInformation[..10]);
             else return new ReadStep(name, StepOutcome.Failed, T("ID_PICC nicht bestimmbar.", "ID_PICC cannot be determined."));
             TerminalAuthenticationResult ta;
-            try { ta = TerminalAuthentication.Perform(sm, chain, terminal.PrivateKey, idPicc, terminalKey, options.MaxCommandData); }
+            try { ta = TerminalAuthentication.Perform(sm, chain, terminal.PrivateKey, idPicc, terminalKey, MaxCommandData(options)); }
             catch (Exception ex) when (ex is SecureMessagingException or ProtocolException)
             {
                 return new ReadStep(name, StepOutcome.Failed, T($"Kette über CAR {car}: {ex.Message}", $"Chain via CAR {car}: {ex.Message}"));

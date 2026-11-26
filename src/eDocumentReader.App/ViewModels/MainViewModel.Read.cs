@@ -361,7 +361,7 @@ public sealed partial class MainViewModel
         HasResult = true;
         RememberSetSource(() => DocumentSet.FromEmrtd(result, isIdl, UseCan ? Can : null), isIdl ? SetDocumentType.Idl : SetDocumentType.Icao,
             result.PassiveAuthentication?.Sod);
-        foreach (var f in result.Files) FileNodes.Add(FileNode.FromFile(f, isIdl ? Idl.TagName : null));
+        foreach (var f in result.Files) FileNodes.Add(FileNode.FromFile(f, CardFiles.IsCardFile(f.Name) ? CardFiles.TagName : isIdl ? Idl.TagName : null));
         if (isIdl) { ShowIdlResult(result); SecurityReport = BuildSecurityReport(result); return; }
         DataPanelTitle = "DG1 – MRZ";
         ImagePanelTitle = T("DG2 – Gesichtsbild", "DG2 – facial image");
@@ -452,7 +452,22 @@ public sealed partial class MainViewModel
             sb.AppendLine("=== EF.CardAccess ===");
             try { foreach (var si in SecurityInfos.Parse(cardAccess)) sb.AppendLine("  " + si.Description); }
             catch (Exception ex) { sb.AppendLine("⚠ " + ex.Message); }
+            sb.AppendLine();
         }
+        if (result.File("EF.CardSecurity") is { } cardSecurity)
+        {
+            sb.AppendLine("=== EF.CardSecurity ===");
+            try { foreach (var si in new CardSecurity(cardSecurity).Infos) sb.AppendLine("  " + si.Description); }
+            catch (Exception ex) { sb.AppendLine("⚠ " + ex.Message); }
+            sb.AppendLine();
+        }
+        sb.AppendLine("=== EF.ATR/INFO (ICAO 9303-10 3.11.1) ===");
+        sb.AppendLine(result.AtrInfo != null ? Indent(result.AtrInfo.Describe())
+            : T("  – nicht vorhanden (für LDS1 optional); Chaining/Extended Length nach Voreinstellung", "  – not present (optional for LDS1); chaining/extended length by default setting"));
+        sb.AppendLine();
+        sb.AppendLine("=== EF.DIR (ICAO 9303-10 3.11.2) ===");
+        sb.AppendLine(result.Dir != null ? Indent(result.Dir.Describe())
+            : T("  – nicht vorhanden (empfohlen; Pflicht, wenn mehr als LDS1 auf dem Chip ist)", "  – not present (recommended; required if more than LDS1 is on the chip)"));
         return sb.ToString();
     }
 

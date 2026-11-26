@@ -1,4 +1,4 @@
-using Org.BouncyCastle.Asn1;
+﻿using Org.BouncyCastle.Asn1;
 using eDocumentReader.Core.Crypto;
 
 namespace eDocumentReader.Core.Protocols;
@@ -40,6 +40,12 @@ public sealed record ActiveAuthenticationInfo(string Oid, int Version, string Si
 }
 
 public sealed record UnknownSecurityInfo(string Oid, Asn1Encodable Raw) : SecurityInfo(Oid, Raw);
+
+/// <summary>EFDIRInfo (ICAO 9303-11 9.2.10): full copy of the content of EF.DIR in the MF.</summary>
+public sealed record EfDirInfo(string Oid, byte[] Content, Asn1Encodable Raw) : SecurityInfo(Oid, Raw)
+{
+    public override string Description => T($"EFDIRInfo, Inhalt von EF.DIR ({Content.Length} Byte)", $"EFDIRInfo, content of EF.DIR ({Content.Length} bytes)");
+}
 
 public sealed record PaceAlgorithm(string Oid, KeyAgreement KeyAgreement, PaceMapping Mapping, SessionKeyType KeyType)
 {
@@ -92,6 +98,8 @@ public static class SecurityInfos
             return new ChipAuthenticationInfo(oid, DerInteger.GetInstance(seq[1]).IntValueExact, OptInt(seq, 2), seq);
         if (oid == Oids.IdTa)
             return new TerminalAuthenticationInfo(oid, DerInteger.GetInstance(seq[1]).IntValueExact, seq);
+        if (oid == Oids.IdEfDir)
+            return new EfDirInfo(oid, Asn1OctetString.GetInstance(seq[1]).GetOctets(), seq);
         if (oid == Oids.IdAa)
             return new ActiveAuthenticationInfo(oid, DerInteger.GetInstance(seq[1]).IntValueExact, DerObjectIdentifier.GetInstance(seq[2]).Id, seq);
         return new UnknownSecurityInfo(oid, seq);
@@ -114,6 +122,8 @@ public static class Oids
     public const string IdPaceEcdhCam = IdPace + ".6";
     public const string IdRi = BsiDe + ".2.2.5";
     public const string IdAa = "2.23.136.1.1.5";
+    /// <summary>id-EFDIR = id-icao-mrtd-security 13 (ICAO 9303-11 9.2.10).</summary>
+    public const string IdEfDir = "2.23.136.1.1.13";
     public const string EcPublicKey = "1.2.840.10045.2.1";
     public const string DhPublicNumber = "1.2.840.10046.2.1";
 
@@ -133,6 +143,7 @@ public static class Oids
         {
             IdTa => "id-TA",
             IdAa => "id-AA",
+            IdEfDir => "id-EFDIR",
             IdPkDh => "id-PK-DH",
             IdPkEcdh => "id-PK-ECDH",
             EcPublicKey => "ecPublicKey",
