@@ -1,4 +1,4 @@
-using eDocumentReader.Core.Documents;
+﻿using eDocumentReader.Core.Documents;
 using eDocumentReader.Core.Logging;
 using eDocumentReader.Core.Protocols;
 using eDocumentReader.Core.Transport;
@@ -71,5 +71,15 @@ public class CardFilesTests
         var transport = new ScriptedTransport(("00 B0 9E 00 DF", "6A82"));
         var ex = Assert.Throws<FileReadException>(() => new FileReader(new CardChannel(transport, Logger.Null)).ReadWholeBySfi(CardFiles.SfiDir, CardFiles.DirName));
         Assert.Equal((ushort)0x6A82, ex.Status!.Value.Value);
+    }
+
+    [Fact]
+    public void WholeFileIsReadAfterSelectByFid()
+    {
+        var transport = new ScriptedTransport(
+            ("00 A4 02 0C 02 2F 01", "9000"),
+            ("00 B0 00 00 DF", "43 01 F8 47 03 F7 41 E0 9000"));
+        var data = new FileReader(new CardChannel(transport, Logger.Null)).ReadWholeByFid(CardFiles.FidAtrInfo, CardFiles.AtrInfoName);
+        Assert.Equal(Hex.Parse("43 01 F8 47 03 F7 41 E0"), data);
     }
 }

@@ -44,6 +44,26 @@ public sealed class FileReader(IApduChannel channel)
         var first = Channel.Transmit(new CommandApdu(0x00, 0xB0, (byte)(0x80 | sfi), 0x00, null, MaxChunk), $"READ BINARY {name} (SFI {sfi:X2})");
         if (!first.Status.IsCompleted || first.Data.Length == 0)
             throw new FileReadException($"{name}: {first.Status} {first.Status.Description}", first.Status);
+        return ReadWholeRest(first, name);
+    }
+
+    /// <summary>
+    /// As <see cref="ReadWholeBySfi"/>, after SELECT by file identifier in the current DF (P1='02', P2='0C'): the way
+    /// ICAO 9303-10 3.11.1 describes for EF.ATR/INFO ("SELECT command followed by the READ BINARY command").
+    /// </summary>
+    public byte[] ReadWholeByFid(ushort fid, string name)
+    {
+        Channel.Logger.Info(LogCategory.Protocol, T($"Lese {name} (FID {fid:X4})", $"Reading {name} (FID {fid:X4})"));
+        var sel = Channel.Transmit(new CommandApdu(0x00, 0xA4, 0x02, 0x0C, [(byte)(fid >> 8), (byte)fid]), $"SELECT {name} ({fid:X4})");
+        if (!sel.Status.IsSuccess) throw new FileReadException($"{name}: SELECT {sel.Status} {sel.Status.Description}", sel.Status);
+        var first = Channel.Transmit(new CommandApdu(0x00, 0xB0, 0x00, 0x00, null, MaxChunk), $"READ BINARY {name}");
+        if (!first.Status.IsCompleted || first.Data.Length == 0)
+            throw new FileReadException($"{name}: READ BINARY {first.Status} {first.Status.Description}", first.Status);
+        return ReadWholeRest(first, name);
+    }
+
+    private byte[] ReadWholeRest(Apdu.ResponseApdu first, string name)
+    {
         var data = new List<byte>(first.Data);
         var last = first;
         while (last.Data.Length == MaxChunk && last.Status.Value != 0x6282 && data.Count <= 0x7FFF - MaxChunk)

@@ -543,22 +543,36 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
         return null;
     }
 
-    /// <summary>EF.ATR/INFO or EF.DIR in the MF, unprotected by SFI; '6A82' means: not present (optional).</summary>
+    /// <summary>
+    /// EF.ATR/INFO or EF.DIR in the MF, unprotected: by SFI (9303-10 Tables 28/30), and if the chip answers '6A82',
+    /// by SELECT FID + READ BINARY (9303-10 3.11.1; production chips often assign no SFI to these files).
+    /// '6A82' both ways means: not present (optional).
+    /// </summary>
     private byte[]? ReadMfFile(byte sfi, ushort fid, string name, EmrtdReadResult result, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         Report(T("Lesen", "Reading"), name);
         Start(FileId(name), ReadName(name));
+        var reader = new FileReader(channel) { Cancellation = ct, Progress = FileProgress };
         try
         {
-            var data = new FileReader(channel) { Cancellation = ct, Progress = FileProgress }.ReadWholeBySfi(sfi, name);
+            byte[] data;
+            try { data = reader.ReadWholeBySfi(sfi, name); }
+            catch (FileReadException ex) when (ex.Status?.Value is 0x6A82 or 0x6981 or 0x6986 or 0x6A81)
+            {
+                channel.Logger.Info(LogCategory.Protocol, T($"{name}: SFI {sfi:X2} → {ex.Status} – Versuch mit SELECT FID {fid:X4}", $"{name}: SFI {sfi:X2} → {ex.Status} – trying SELECT FID {fid:X4}"), null, "ICAO 9303-10 3.11");
+                data = reader.ReadWholeByFid(fid, name);
+                // The file exists, but not under the SFI that 9303-10 assigns (Table 28 / 30) – a deviation of the chip.
+                AddStep(result, new ReadStep(T($"Normkonformität {name}", $"Conformance {name}"), StepOutcome.Warning,
+                    T($"nur per SELECT FID {fid:X4} lesbar, nicht per SFI {sfi:X2} ({ex.Status}); ICAO 9303-10 sieht SFI {sfi:X2} vor", $"readable by SELECT FID {fid:X4} only, not by SFI {sfi:X2} ({ex.Status}); ICAO 9303-10 assigns SFI {sfi:X2}")));
+            }
             result.Files.Add(new EmrtdFile(name, sfi, 0, data, fid));
             ReadDone(name, data.Length);
             return data;
         }
         catch (FileReadException ex) when (ex.Status?.Value == 0x6A82)
         {
-            channel.Logger.Info(LogCategory.Protocol, T($"{name}: optional, nicht vorhanden (6A82)", $"{name}: optional, not present (6A82)"), null, "ICAO 9303-10 3.11");
+            channel.Logger.Info(LogCategory.Protocol, T($"{name}: optional, nicht vorhanden (6A82 per SFI und per FID)", $"{name}: optional, not present (6A82 by SFI and by FID)"), null, "ICAO 9303-10 3.11");
             Provisional(new ReadStep(ReadName(name), StepOutcome.NotSupported, T("optional, nicht vorhanden (6A82)", "optional, not present (6A82)")) { Key = FileId(name) });
             return null;
         }
