@@ -117,6 +117,7 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
         var log = channel.Logger;
         var result = new EmrtdReadResult();
         var accessName = T("Zugriffskontrolle", "Access control");
+        if (options.IsIdl) Plan("context", ContextName(options));
         Plan(FileId("EF.CardAccess"), ReadName("EF.CardAccess"));
         Plan("access", accessName);
         Plan(FileId("EF.COM"), ReadName("EF.COM"));
@@ -124,6 +125,9 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
         Plan("Chip Authentication", "Chip Authentication");
         Plan("Active Authentication", "Active Authentication");
         Plan("Passive Authentication", "Passive Authentication");
+
+        // 0. IDL: the EF.CardAccess to read is the one of the IDL application's MF context (see SelectIdlContext).
+        if (options.IsIdl) SelectIdlContext(options, result);
 
         // 1. EF.CardAccess in the MF (9303-11 4.2, 9303-10 3.11.3)
         Report("EF.CardAccess");
@@ -167,7 +171,8 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
             Start("access", accessName, "PACE");
             var password = options.Key switch
             {
-                AccessKey.MrzKey m => PacePassword.FromMrz(m.MrzInformation),
+                // IDL: the key is the printed input string; PACE uses it unhashed (ISO/IEC 18013-3 8.7, Amd.1 C.2.1).
+                AccessKey.MrzKey m => options.IsIdl ? PacePassword.FromIdlInputString(m.MrzInformation) : PacePassword.FromMrz(m.MrzInformation),
                 AccessKey.CanKey c => PacePassword.FromCan(c.Can),
                 _ => throw new ArgumentOutOfRangeException(nameof(options)),
             };
@@ -368,6 +373,32 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
     {
         result.Steps.Remove(step);
         Drop(step.Id);
+    }
+
+    private static string ContextName(EmrtdReadOptions options) => T($"SELECT {options.ApplicationName}-Anwendung + MF", $"SELECT {options.ApplicationName} application + MF");
+
+    /// <summary>
+    /// Unprotected SELECT of the IDL application (allowed before BAP/PACE, ISO/IEC 18013-3 8.1), then SELECT MF
+    /// (ISO/IEC 7816-4 11.2.2, empty data field). On a card with several document applications the MF context then
+    /// belongs to the IDL: a BAP-only IDL has no EF.CardAccess (6A82) and PACE is not tried; with a card-wide MF the
+    /// SELECT MF leaves the application, so EF.CardAccess is read from the MF as before.
+    /// </summary>
+    private void SelectIdlContext(EmrtdReadOptions options, EmrtdReadResult result)
+    {
+        var name = ContextName(options);
+        Report(name);
+        Start("context", name);
+        var sw = channel.Transmit(new CommandApdu(0x00, 0xA4, 0x04, 0x0C, options.Aid), SelectName(options)).Status;
+        // 6987/6988: SM session of an earlier connection still open; the chip ends it on this error (9303-11 9.8.5) – repeat once.
+        if (sw.Value is 0x6987 or 0x6988) sw = channel.Transmit(new CommandApdu(0x00, 0xA4, 0x04, 0x0C, options.Aid), T($"{SelectName(options)} (Wiederholung)", $"{SelectName(options)} (retry)")).Status;
+        if (!sw.IsSuccess)
+        {
+            AddStep(result, new ReadStep(name, StepOutcome.Failed, $"AID {Hex.Of(options.Aid)}: {sw} {sw.Description}") { Key = "context" });
+            throw new ProtocolException(T($"{SelectName(options)}: {sw} {sw.Description}", $"{SelectName(options)}: {sw} {sw.Description}"), sw);
+        }
+        var mf = channel.Transmit(new CommandApdu(0x00, 0xA4, 0x00, 0x0C), T("SELECT MF", "SELECT MF")).Status;
+        AddStep(result, new ReadStep(name, mf.IsSuccess ? StepOutcome.Success : StepOutcome.Warning,
+            T($"AID {Hex.Of(options.Aid)}: {sw}; SELECT MF: {mf} {(mf.IsSuccess ? "" : mf.Description)}", $"AID {Hex.Of(options.Aid)}: {sw}; SELECT MF: {mf} {(mf.IsSuccess ? "" : mf.Description)}").TrimEnd()) { Key = "context" });
     }
 
     private static string SelectName(EmrtdReadOptions options) => T($"SELECT {options.ApplicationName}-Anwendung", $"SELECT {options.ApplicationName} application");

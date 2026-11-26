@@ -1,4 +1,4 @@
-using System.Security.Cryptography;
+﻿using System.Security.Cryptography;
 using System.Text;
 using eDocumentReader.Core.Apdu;
 using eDocumentReader.Core.Crypto;
@@ -21,13 +21,22 @@ public enum PacePasswordType : byte { Mrz = 1, Can = 2, Pin = 3, Puk = 4 }
 
 public sealed record PacePassword(PacePasswordType Type, string Value)
 {
+    /// <summary>IDL input string (ISO/IEC 18013-3 8.7, Amd.1 C.2.1): reference 01 like the MRZ, but K = KDF(input string) without SHA-1.</summary>
+    public bool IsIdlInputString { get; init; }
+
     public static PacePassword FromMrz(string mrzInformation) => new(PacePasswordType.Mrz, mrzInformation);
     public static PacePassword FromCan(string can) => new(PacePasswordType.Can, can);
+    public static PacePassword FromIdlInputString(string inputString) => new(PacePasswordType.Mrz, inputString) { IsIdlInputString = true };
 
-    /// <summary>f(π): SHA-1(MRZ_information) for MRZ, ISO 8859-1 encoding otherwise (9303-11 4.4.4 / 9.7.3).</summary>
-    public byte[] Encode() => Type == PacePasswordType.Mrz
+    /// <summary>
+    /// f(π): SHA-1(MRZ_information) for the MRZ (9303-11 4.4.4 / 9.7.3); the ISO 8859-1 encoding for the CAN and for
+    /// the IDL input string (ISO/IEC 18013-3 8.7, Amd.1 C.2.1).
+    /// </summary>
+    public byte[] Encode() => Type == PacePasswordType.Mrz && !IsIdlInputString
         ? SHA1.HashData(Encoding.ASCII.GetBytes(Value))
         : Encoding.Latin1.GetBytes(Value);
+
+    public string Description => IsIdlInputString ? T("Mrz (IDL-Input-String, ISO/IEC 18013-3 8.7)", "Mrz (IDL input string, ISO/IEC 18013-3 8.7)") : Type.ToString();
 }
 
 /// <summary>Deterministic values for tests (ICAO 9303-11 Appendix G).</summary>
@@ -58,7 +67,7 @@ public static class Pace
     {
         var log = channel.Logger;
         var alg = info.Algorithm;
-        log.Info(LogCategory.Protocol, T($"PACE: Start mit {info.Description}, Passwort {password.Type}", $"PACE: start with {info.Description}, password {password.Type}"), null, Ref);
+        log.Info(LogCategory.Protocol, T($"PACE: Start mit {info.Description}, Passwort {password.Description}", $"PACE: start with {info.Description}, password {password.Description}"), null, Ref);
         if (alg.KeyAgreement != KeyAgreement.Ecdh || alg.Mapping is not (PaceMapping.Generic or PaceMapping.ChipAuthentication)
             || (alg.Mapping == PaceMapping.ChipAuthentication && alg.KeyType == SessionKeyType.DesEde))
             throw new NotSupportedException(T($"PACE-Variante {Oids.Name(info.Oid)} ist noch nicht implementiert.", $"PACE variant {Oids.Name(info.Oid)} is not implemented yet."));

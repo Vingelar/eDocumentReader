@@ -42,6 +42,17 @@ public class SecurityProtocolTests
         finally { Directory.Delete(root, true); }
     }
 
+    /// <summary>ISO/IEC 18013-3 8.7, Amd.1 C.2.1: the IDL input string is the PACE password itself (reference 01, no SHA-1).</summary>
+    [Fact]
+    public void IdlPacePasswordIsTheUnhashedInputString()
+    {
+        const string input = "1ABCDEFGH12345678901234567890";
+        var idl = PacePassword.FromIdlInputString(input);
+        Assert.Equal(PacePasswordType.Mrz, idl.Type);
+        Assert.Equal(System.Text.Encoding.Latin1.GetBytes(input), idl.Encode());
+        Assert.Equal(System.Security.Cryptography.SHA1.HashData(System.Text.Encoding.ASCII.GetBytes(input)), PacePassword.FromMrz(input).Encode());
+    }
+
     [Fact]
     public void CandidateTrustPoints_WithoutCvcaCertificate_UsesCarOfDv()
     {

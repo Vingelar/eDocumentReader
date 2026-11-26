@@ -17,6 +17,8 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        // Tall enough for the result list; never taller than the work area of the screen.
+        Height = Math.Min(Height, SystemParameters.WorkArea.Height);
         DataContext = viewModel;
         HookLog();
         // The log view is rebuilt when a display level changes.
