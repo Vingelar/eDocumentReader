@@ -89,7 +89,7 @@
                                     <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
                                         <TextBlock Text="{l:Tr 'Anwendung', En='Application'}" Width="70" VerticalAlignment="Center" />
                                         <ComboBox SelectedIndex="{Binding ApplicationChoice}" Width="210"
-                                                  ToolTip="{l:Tr 'Automatisch: IDL-Anwendung (ISO/IEC 18013-3) vorhanden → Führerschein, sonst eMRTD', En='Automatic: IDL application (ISO/IEC 18013-3) present → driving licence, otherwise eMRTD'}">
+                                                  ToolTip="{l:Tr 'Automatisch: EF.CardAccess im MF zuerst, dann SELECT der Anwendung (nach PACE bzw. vor BAC/BAP). Führerschein-MRZ → IDL, sonst eMRTD, dann IDL', En='Automatic: EF.CardAccess in the MF first, then SELECT of the application (after PACE or before BAC/BAP). Driving licence MRZ → IDL, otherwise eMRTD, then IDL'}">
                                             <ComboBoxItem Content="{l:Tr 'Automatisch erkennen', En='Detect automatically'}" />
                                             <ComboBoxItem Content="{l:Tr 'Pass / ID-Karte (ICAO 9303)', En='Passport / ID card (ICAO 9303)'}" />
                                             <ComboBoxItem Content="{l:Tr 'Führerschein IDL (ISO 18013-3)', En='Driving licence IDL (ISO 18013-3)'}" />

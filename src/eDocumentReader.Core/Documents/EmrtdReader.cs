@@ -12,7 +12,14 @@ namespace eDocumentReader.Core.Documents;
 /// <summary>Access key for BAC/PACE: MRZ information (document number, date of birth, date of expiry with check digits) or CAN.</summary>
 public abstract record AccessKey
 {
-    public sealed record MrzKey(string MrzInformation) : AccessKey;
+    public sealed record MrzKey(string MrzInformation) : AccessKey
+    {
+        /// <summary>
+        /// The value is the IDL input string (ISO/IEC 18013-3 8.3.2.5, 8.5.4: Kdoc for BAP) and not ICAO MRZ information;
+        /// PACE then uses f(π) = input string (Amd.1 C.2.2) instead of SHA-1(MRZ information).
+        /// </summary>
+        public bool IsIdlInputString { get; init; }
+    }
     public sealed record CanKey(string Can) : AccessKey;
 }
 
@@ -40,6 +47,29 @@ public sealed class EmrtdReadOptions
     public int ChainingBlockSize { get; init; } = 192;
     public int? MaxCommandData => (CommandChaining ?? IsIdl) ? ChainingBlockSize : null;
     public bool IsIdl => Aid.AsSpan().SequenceEqual(EmrtdReader.IdlAid);
+
+    /// <summary>
+    /// Applications to try in this order (automatic detection). The SELECT by AID happens where the standards put it:
+    /// after PACE under secure messaging, or before BAC/BAP (ICAO 9303-11 4.2, ISO/IEC 18013-3 8.7.4). If BAC/BAP fails
+    /// with one application, the next one is tried with the same key. null: only <see cref="Aid"/>.
+    /// </summary>
+    public IReadOnlyList<EmrtdReader.DocumentApplication>? Candidates { get; init; }
+
+    /// <summary>The same options for one application.</summary>
+    public EmrtdReadOptions For(EmrtdReader.DocumentApplication application) => new()
+    {
+        Key = Key,
+        PreferPace = PreferPace,
+        PreferChipAuthenticationMapping = PreferChipAuthenticationMapping,
+        ChipAuthentication = ChipAuthentication,
+        TerminalAuthentication = TerminalAuthentication,
+        ActiveAuthentication = ActiveAuthentication,
+        Aid = application == EmrtdReader.DocumentApplication.Idl ? EmrtdReader.IdlAid : EmrtdReader.EmrtdAid,
+        ApplicationName = application == EmrtdReader.DocumentApplication.Idl ? "IDL" : "eMRTD",
+        CommandChaining = CommandChaining,
+        ChainingBlockSize = ChainingBlockSize,
+        Candidates = Candidates,
+    };
 }
 
 public enum StepOutcome { Success, Failed, Skipped, NotSupported, Warning }
@@ -80,6 +110,9 @@ public sealed class EmrtdReadResult
     public Dictionary<int, byte[]> DataGroups { get; } = [];
     public List<int> DataGroupsListed { get; } = [];
     public PassiveAuthenticationResult? PassiveAuthentication { get; set; }
+    /// <summary>The application that was selected and read.</summary>
+    public EmrtdReader.DocumentApplication Application { get; set; }
+    public bool IsIdl => Application == EmrtdReader.DocumentApplication.Idl;
     public string? AccessControl { get; set; }
 
     public byte[]? File(string name) => Files.FirstOrDefault(f => f.Name == name)?.Data;
@@ -117,7 +150,6 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
         var log = channel.Logger;
         var result = new EmrtdReadResult();
         var accessName = T("Zugriffskontrolle", "Access control");
-        if (options.IsIdl) Plan("context", ContextName(options));
         Plan(FileId("EF.CardAccess"), ReadName("EF.CardAccess"));
         Plan("access", accessName);
         Plan(FileId("EF.COM"), ReadName("EF.COM"));
@@ -126,10 +158,13 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
         Plan("Active Authentication", "Active Authentication");
         Plan("Passive Authentication", "Passive Authentication");
 
-        // 0. IDL: the EF.CardAccess to read is the one of the IDL application's MF context (see SelectIdlContext).
-        if (options.IsIdl) SelectIdlContext(options, result);
+        IReadOnlyList<DocumentApplication> candidates = options.Candidates is { Count: > 0 } list ? list : [options.IsIdl ? DocumentApplication.Idl : DocumentApplication.Emrtd];
+        options = options.For(candidates[0]);
+        result.Application = candidates[0];
 
-        // 1. EF.CardAccess in the MF (9303-11 4.2, 9303-10 3.11.3)
+        // 1. EF.CardAccess in the MF, read first and without any SELECT (9303-11 4.2 step 1, 9303-10 3.11.3,
+        //    ISO/IEC 18013-3 8.7.3): after reset the MF is the current DF (ISO/IEC 7816-4 7.1). SELECT MF is
+        //    not used (9303-10 3.6.1.1: not recommended). No EF.CardAccess means: no PACE.
         Report("EF.CardAccess");
         Start(FileId("EF.CardAccess"), ReadName("EF.CardAccess"));
         List<PaceInfo> paceInfos = [];
@@ -162,7 +197,7 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
         string? paceFailure = null;
         var usePace = paceInfos.Count > 0 && (options.PreferPace || options.Key is AccessKey.CanKey);
         // PACE runs in the MF before the SELECT of the application; BAC/BAP after it (9303-11 4.2/4.3).
-        Plan("select", SelectName(options), before: usePace ? FileId("EF.COM") : "access");
+        Plan("select", candidates.Count > 1 ? T("SELECT Anwendung", "SELECT application") : SelectName(options), before: usePace ? FileId("EF.COM") : "access");
         try
         {
         if (usePace)
@@ -172,7 +207,7 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
             var password = options.Key switch
             {
                 // IDL: the key is the printed input string; PACE uses it unhashed (ISO/IEC 18013-3 8.7, Amd.1 C.2.1).
-                AccessKey.MrzKey m => options.IsIdl ? PacePassword.FromIdlInputString(m.MrzInformation) : PacePassword.FromMrz(m.MrzInformation),
+                AccessKey.MrzKey m => m.IsIdlInputString || options.IsIdl ? PacePassword.FromIdlInputString(m.MrzInformation) : PacePassword.FromMrz(m.MrzInformation),
                 AccessKey.CanKey c => PacePassword.FromCan(c.Can),
                 _ => throw new ArgumentOutOfRangeException(nameof(options)),
             };
@@ -212,17 +247,37 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
                 camVerified = step.Outcome is StepOutcome.Success or StepOutcome.Warning;
                 AddStep(result, step);
             }
-            Select(sm, options, result);
+            // PACE is application independent; the application is selected under secure messaging afterwards
+            // (9303-11 4.2, ISO/IEC 18013-3 8.7.4 d).
+            options = SelectApplication(sm, candidates, options, result);
         }
         else
         {
             if (options.Key is not AccessKey.MrzKey mrz)
                 throw new ProtocolException(T("CAN ist nur mit PACE verwendbar, der Chip bietet in EF.CardAccess kein PACE an (ICAO 9303-11 4.4).", "CAN works with PACE only; the chip offers no PACE in EF.CardAccess (ICAO 9303-11 4.4)."));
             if (paceFailure != null) AddStep(result, new ReadStep("PACE (MRZ)", StepOutcome.Warning, T($"{paceFailure} – Rückfall auf {(options.IsIdl ? "BAP" : "BAC")}", $"{paceFailure} – fallback to {(options.IsIdl ? "BAP" : "BAC")}")));
-            Report(options.IsIdl ? "BAP" : "BAC");
-            Start("access", accessName, options.IsIdl ? "BAP" : "BAC");
-            Select(channel, options, result);
-            sm = Bac.Perform(channel, mrz.MrzInformation);
+            // BAC/BAP run in the application, which is selected first (9303-11 4.2 step 4, ISO/IEC 18013-3 8.5.4).
+            for (var i = 0; ; i++)
+            {
+                var candidate = options.For(candidates[i]);
+                var last = i == candidates.Count - 1;
+                if (!TrySelect(channel, candidate, result, last)) continue;
+                var protocol = candidate.IsIdl ? "BAP" : "BAC";
+                Report(protocol);
+                Start("access", accessName, protocol);
+                try
+                {
+                    sm = Bac.Perform(channel, mrz.MrzInformation);
+                    options = candidate;
+                    break;
+                }
+                catch (Exception ex) when (!last && ex is ProtocolException or SecureMessagingException)
+                {
+                    var next = options.For(candidates[i + 1]).ApplicationName;
+                    log.Warning(LogCategory.Protocol, T($"{protocol} mit der {candidate.ApplicationName}-Anwendung fehlgeschlagen ({ex.Message}) – Versuch mit der {next}-Anwendung und demselben Schlüssel", $"{protocol} with the {candidate.ApplicationName} application failed ({ex.Message}) – trying the {next} application with the same key"));
+                    AddStep(result, new ReadStep($"{protocol} ({candidate.ApplicationName})", StepOutcome.Warning, T($"{ex.Message} – Versuch mit {next}", $"{ex.Message} – trying {next}")));
+                }
+            }
             result.AccessControl = options.IsIdl ? T("BAP Konfiguration 1 (ISO/IEC 18013-3 8.2.3)", "BAP configuration 1 (ISO/IEC 18013-3 8.2.3)") : "BAC";
         }
         }
@@ -375,42 +430,41 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
         Drop(step.Id);
     }
 
-    private static string ContextName(EmrtdReadOptions options) => T($"SELECT {options.ApplicationName}-Anwendung + MF", $"SELECT {options.ApplicationName} application + MF");
-
-    /// <summary>
-    /// Unprotected SELECT of the IDL application (allowed before BAP/PACE, ISO/IEC 18013-3 8.1), then SELECT MF
-    /// (ISO/IEC 7816-4 11.2.2, empty data field). On a card with several document applications the MF context then
-    /// belongs to the IDL: a BAP-only IDL has no EF.CardAccess (6A82) and PACE is not tried; with a card-wide MF the
-    /// SELECT MF leaves the application, so EF.CardAccess is read from the MF as before.
-    /// </summary>
-    private void SelectIdlContext(EmrtdReadOptions options, EmrtdReadResult result)
-    {
-        var name = ContextName(options);
-        Report(name);
-        Start("context", name);
-        var sw = channel.Transmit(new CommandApdu(0x00, 0xA4, 0x04, 0x0C, options.Aid), SelectName(options)).Status;
-        // 6987/6988: SM session of an earlier connection still open; the chip ends it on this error (9303-11 9.8.5) – repeat once.
-        if (sw.Value is 0x6987 or 0x6988) sw = channel.Transmit(new CommandApdu(0x00, 0xA4, 0x04, 0x0C, options.Aid), T($"{SelectName(options)} (Wiederholung)", $"{SelectName(options)} (retry)")).Status;
-        if (!sw.IsSuccess)
-        {
-            AddStep(result, new ReadStep(name, StepOutcome.Failed, $"AID {Hex.Of(options.Aid)}: {sw} {sw.Description}") { Key = "context" });
-            throw new ProtocolException(T($"{SelectName(options)}: {sw} {sw.Description}", $"{SelectName(options)}: {sw} {sw.Description}"), sw);
-        }
-        var mf = channel.Transmit(new CommandApdu(0x00, 0xA4, 0x00, 0x0C), T("SELECT MF", "SELECT MF")).Status;
-        AddStep(result, new ReadStep(name, mf.IsSuccess ? StepOutcome.Success : StepOutcome.Warning,
-            T($"AID {Hex.Of(options.Aid)}: {sw}; SELECT MF: {mf} {(mf.IsSuccess ? "" : mf.Description)}", $"AID {Hex.Of(options.Aid)}: {sw}; SELECT MF: {mf} {(mf.IsSuccess ? "" : mf.Description)}").TrimEnd()) { Key = "context" });
-    }
-
     private static string SelectName(EmrtdReadOptions options) => T($"SELECT {options.ApplicationName}-Anwendung", $"SELECT {options.ApplicationName} application");
 
-    private void Select(IApduChannel c, EmrtdReadOptions options, EmrtdReadResult result)
+    /// <summary>SELECT of the first candidate application that exists (under SM after PACE).</summary>
+    private EmrtdReadOptions SelectApplication(IApduChannel c, IReadOnlyList<DocumentApplication> candidates, EmrtdReadOptions options, EmrtdReadResult result)
+    {
+        for (var i = 0; ; i++)
+        {
+            var candidate = options.For(candidates[i]);
+            if (TrySelect(c, candidate, result, last: i == candidates.Count - 1)) return candidate;
+        }
+    }
+
+    /// <summary>
+    /// SELECT by AID (9303-10 3.6.1.2, ISO/IEC 18013-2 C.7.5.1). A missing application is skipped while another
+    /// candidate remains; the last one throws.
+    /// </summary>
+    private bool TrySelect(IApduChannel c, EmrtdReadOptions options, EmrtdReadResult result, bool last)
     {
         var name = SelectName(options);
         Start("select", name);
         var sel = c.Transmit(new CommandApdu(0x00, 0xA4, 0x04, 0x0C, options.Aid), name);
-        AddStep(result, new ReadStep(name, sel.Status.IsSuccess ? StepOutcome.Success : StepOutcome.Failed,
-            $"AID {Hex.Of(options.Aid)}: {sel.Status} {sel.Status.Description}") { Key = "select" });
-        if (!sel.Status.IsSuccess) throw new ProtocolException($"{name}: {sel.Status} {sel.Status.Description}", sel.Status);
+        var detail = $"AID {Hex.Of(options.Aid)}: {sel.Status} {sel.Status.Description}";
+        if (sel.Status.IsSuccess)
+        {
+            AddStep(result, new ReadStep(name, StepOutcome.Success, detail) { Key = "select" });
+            result.Application = options.IsIdl ? DocumentApplication.Idl : DocumentApplication.Emrtd;
+            return true;
+        }
+        if (!last)
+        {
+            AddStep(result, new ReadStep(name, StepOutcome.Skipped, T($"{detail} – Anwendung nicht vorhanden", $"{detail} – application not present")) { Key = "select" });
+            return false;
+        }
+        AddStep(result, new ReadStep(name, StepOutcome.Failed, detail) { Key = "select" });
+        throw new ProtocolException($"{name}: {sel.Status} {sel.Status.Description}", sel.Status);
     }
 
     private byte[]? ReadFile(IApduChannel c, byte sfi, string name, int dg, EmrtdReadResult result, CancellationToken ct, bool absentIsNormal = false)

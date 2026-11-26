@@ -103,7 +103,7 @@ public sealed partial class MainViewModel
             return null;
         }
         // IDL: BAP key seed from characters 2–29 of the single-line MRZ (ISO/IEC 18013-3 8.2.3).
-        if (pastedIdlMrz != null) return new AccessKey.MrzKey(pastedIdlMrz.BapKeySeedInformation);
+        if (pastedIdlMrz != null) return new AccessKey.MrzKey(pastedIdlMrz.BapKeySeedInformation) { IsIdlInputString = true };
         var doc = DocumentNumber.Trim().ToUpperInvariant();
         // A pasted MRZ supplies its own check digits and the extended document number (9303-3 4.2.4, 9303-11 9.7.2).
         if (pastedMrz != null && pastedMrz.DocumentNumber.TrimEnd('<') == doc && pastedMrz.DateOfBirth == DateOfBirth && pastedMrz.DateOfExpiry == DateOfExpiry)
@@ -135,79 +135,53 @@ public sealed partial class MainViewModel
         var ct = readCancellation.Token;
         var channel = Channel;
         var started = DateTime.Now;
-        var automatic = ApplicationChoice == 0;
-        var fallback = false;
         try
         {
-            EmrtdReader.DocumentApplication application;
-            if (automatic)
+            // Automatic: the reader finds the application by SELECT where the standards put it (after PACE under SM,
+            // or before BAC/BAP). An IDL input string only fits the IDL; an MRZ or CAN is tried with eMRTD first.
+            IReadOnlyList<EmrtdReader.DocumentApplication> candidates = ApplicationChoice switch
             {
-                var detectAnchor = LogSink.Count;
-                var (detected, sw) = await Task.Run(() => EmrtdReader.Detect(channel), ct);
-                application = detected;
-                AddFinishedStep(new ReadStep(T("SELECT IDL-Anwendung (Erkennung)", "SELECT IDL application (detection)"),
-                    detected == EmrtdReader.DocumentApplication.Idl ? StepOutcome.Success : StepOutcome.Skipped,
-                    detected == EmrtdReader.DocumentApplication.Idl
-                        ? T($"{sw}: IDL-Anwendung vorhanden", $"{sw}: IDL application present")
-                        : T($"{sw} {sw.Description}: keine IDL-Anwendung → eMRTD", $"{sw} {sw.Description}: no IDL application → eMRTD")), detectAnchor);
-            }
-            else application = ApplicationChoice == 2 ? EmrtdReader.DocumentApplication.Idl : EmrtdReader.DocumentApplication.Emrtd;
+                1 => [EmrtdReader.DocumentApplication.Emrtd],
+                2 => [EmrtdReader.DocumentApplication.Idl],
+                _ when pastedIdlMrz != null && !UseCan => [EmrtdReader.DocumentApplication.Idl],
+                _ => [EmrtdReader.DocumentApplication.Emrtd, EmrtdReader.DocumentApplication.Idl],
+            };
             ReadStage = T("PKI-Speicher laden", "Loading the PKI store");
             pki ??= await Task.Run(() => new PkiStore());
-            while (true)
+            // Warm reset: afterwards the MF is the current DF (ISO/IEC 7816-4 7.1) and no SM session of an earlier
+            // read is open, so EF.CardAccess is read first and without SELECT (ICAO 9303-11 4.2 step 1).
+            var resetAnchor = LogSink.Count;
+            var reset = await Task.Run(ResetCard);
+            AddFinishedStep(new ReadStep(T("Reset der Karte", "Card reset"), reset == null ? StepOutcome.Success : StepOutcome.Warning,
+                reset == null ? T("Warm-Reset, MF ist aktuelles DF (ISO/IEC 7816-4 7.1)", "warm reset, MF is the current DF (ISO/IEC 7816-4 7.1)") : T($"Reset fehlgeschlagen ({reset}) – Lesen ohne Reset", $"reset failed ({reset}) – reading without reset")), resetAnchor);
+            var options = new EmrtdReadOptions
             {
-                var isIdl = application == EmrtdReader.DocumentApplication.Idl;
-                if (!isIdl && pastedIdlMrz != null && !UseCan)
-                    throw new ProtocolException(T("Führerschein-MRZ eingegeben, auf der Karte ist aber keine IDL-Anwendung (ISO/IEC 18013-3) auswählbar.", "A driving licence MRZ was entered, but no IDL application (ISO/IEC 18013-3) can be selected on the card."));
-                var options = new EmrtdReadOptions
+                Key = key,
+                PreferPace = PreferPace,
+                ChipAuthentication = RunChipAuthentication,
+                TerminalAuthentication = RunTerminalAuthentication,
+                ActiveAuthentication = RunActiveAuthentication,
+                Candidates = candidates,
+            };
+            var reader = new EmrtdReader(channel, pki)
+            {
+                Progress = p => dispatcher.BeginInvoke(() =>
+                    ReadStage = p.File == null ? p.Stage : p.Total > 0 ? T($"{p.Stage} {p.File}: {p.Done} / {p.Total} Bytes", $"{p.Stage} {p.File}: {p.Done} / {p.Total} bytes") : $"{p.Stage} {p.File}"),
+                StepChanged = e =>
                 {
-                    Key = key,
-                    Aid = isIdl ? EmrtdReader.IdlAid : EmrtdReader.EmrtdAid,
-                    ApplicationName = isIdl ? "IDL" : "eMRTD",
-                    PreferPace = PreferPace,
-                    ChipAuthentication = RunChipAuthentication,
-                    TerminalAuthentication = RunTerminalAuthentication,
-                    ActiveAuthentication = RunActiveAuthentication,
-                };
-                var reader = new EmrtdReader(channel, pki)
-                {
-                    Progress = p => dispatcher.BeginInvoke(() =>
-                        ReadStage = p.File == null ? p.Stage : p.Total > 0 ? T($"{p.Stage} {p.File}: {p.Done} / {p.Total} Bytes", $"{p.Stage} {p.File}: {p.Done} / {p.Total} bytes") : $"{p.Stage} {p.File}"),
-                    StepChanged = e =>
-                    {
-                        // Captured on the reading thread: the log entries of this step follow this index.
-                        var anchor = LogSink.Count;
-                        dispatcher.BeginInvoke(() => ApplyStep(e, anchor));
-                    },
-                };
-                EmrtdReadResult result;
-                try
-                {
-                    result = await Task.Run(() => reader.Read(options, ct), ct);
-                }
-                catch (AccessControlException ex) when (automatic && isIdl && !fallback && pastedIdlMrz == null)
-                {
-                    // Automatic detection chose the IDL application (its SELECT succeeded), but the key was not
-                    // accepted there: the card may also carry an eMRTD application for which the key is meant.
-                    fallback = true;
-                    await FlushStepEvents();
-                    FinishOpenSteps(cancelled: false, ex.Message);
+                    // Captured on the reading thread: the log entries of this step follow this index.
                     var anchor = LogSink.Count;
-                    Logger.Warning(LogCategory.Application, T($"IDL-Anwendung: Zugriffskontrolle fehlgeschlagen ({ex.Message}) – Versuch mit der eMRTD-Anwendung und demselben Schlüssel", $"IDL application: access control failed ({ex.Message}) – trying the eMRTD application with the same key"));
-                    AddFinishedStep(new ReadStep(T("Anwendung", "Application"), StepOutcome.Warning, T("IDL lehnt den Schlüssel ab – Versuch mit eMRTD (ICAO 9303)", "IDL rejects the key – trying eMRTD (ICAO 9303)")), anchor);
-                    ResetCard();
-                    application = EmrtdReader.DocumentApplication.Emrtd;
-                    continue;
-                }
-                await FlushStepEvents();
-                FinishOpenSteps(cancelled: false, null);
-                ReadProgress = 100;
-                ShowResult(result, isIdl);
-                var failed = result.Steps.Count(s => s.Outcome == StepOutcome.Failed);
-                var via = fallback ? T(" (nach Rückfall von IDL)", " (after fallback from IDL)") : "";
-                StatusText = T($"{(isIdl ? "Führerschein (IDL)" : "Dokument")} gelesen in {(DateTime.Now - started).TotalSeconds:F1} s – {result.AccessControl}{via}{(failed > 0 ? $", {failed} Schritt(e) fehlgeschlagen" : "")}", $"{(isIdl ? "Driving licence (IDL)" : "Document")} read in {(DateTime.Now - started).TotalSeconds:F1} s – {result.AccessControl}{via}{(failed > 0 ? $", {failed} step(s) failed" : "")}");
-                break;
-            }
+                    dispatcher.BeginInvoke(() => ApplyStep(e, anchor));
+                },
+            };
+            var result = await Task.Run(() => reader.Read(options, ct), ct);
+            await FlushStepEvents();
+            FinishOpenSteps(cancelled: false, null);
+            ReadProgress = 100;
+            var isIdl = result.IsIdl;
+            ShowResult(result, isIdl);
+            var failed = result.Steps.Count(s => s.Outcome == StepOutcome.Failed);
+            StatusText = T($"{(isIdl ? "Führerschein (IDL)" : "Dokument")} gelesen in {(DateTime.Now - started).TotalSeconds:F1} s – {result.AccessControl}{(failed > 0 ? $", {failed} Schritt(e) fehlgeschlagen" : "")}", $"{(isIdl ? "Driving licence (IDL)" : "Document")} read in {(DateTime.Now - started).TotalSeconds:F1} s – {result.AccessControl}{(failed > 0 ? $", {failed} step(s) failed" : "")}");
         }
         catch (OperationCanceledException)
         {
@@ -344,15 +318,20 @@ public sealed partial class MainViewModel
         return marked;
     }
 
-    /// <summary>Warm reset before another application is tried: back to the MF without an open SM session.</summary>
-    private void ResetCard()
+    /// <summary>Warm reset before reading: MF current, no open SM session. Returns null or the error message.</summary>
+    private string? ResetCard()
     {
         try
         {
             transport?.Reset(cold: false);
-            Logger.Info(LogCategory.Reader, T("Warm-Reset vor dem Wechsel der Anwendung", "Warm reset before changing the application"), transport?.Atr);
+            Logger.Info(LogCategory.Reader, T("Warm-Reset vor dem Lesen", "Warm reset before reading"), transport?.Atr);
+            return null;
         }
-        catch (Exception ex) { Logger.Warning(LogCategory.Reader, T($"Reset fehlgeschlagen: {ex.Message}", $"Reset failed: {ex.Message}")); }
+        catch (Exception ex)
+        {
+            Logger.Warning(LogCategory.Reader, T($"Reset fehlgeschlagen: {ex.Message}", $"Reset failed: {ex.Message}"));
+            return ex.Message;
+        }
     }
 
     [RelayCommand(CanExecute = nameof(IsReading))]
