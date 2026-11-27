@@ -12,8 +12,18 @@ docs/standards/*
 !docs/standards/TR-03110_EAC-Worked-Example/
 docs/standards/TR-03110_EAC-Worked-Example/*
 !docs/standards/TR-03110_EAC-Worked-Example/Certificates/
+docs/standards/TR-03110_EAC-Worked-Example/Certificates/*/CVCA_Key_at.pkcs8
 !docs/standards/TR-03105-5_ReferenceDataSet/
 docs/standards/TR-03105-5_ReferenceDataSet/*
 !docs/standards/TR-03105-5_ReferenceDataSet/referenceDataSet/
+docs/standards/TR-03105-5_ReferenceDataSet/referenceDataSet/*
+!docs/standards/TR-03105-5_ReferenceDataSet/referenceDataSet/Datagroup14.bin
+!docs/standards/TR-03105-5_ReferenceDataSet/referenceDataSet/Datagroup15.bin
+!docs/standards/TR-03105-5_ReferenceDataSet/referenceDataSet/DG14_sk.pkcs8
+!docs/standards/TR-03105-5_ReferenceDataSet/referenceDataSet/DG15_sk.pkcs8
+
+# Documents and helpers of other projects / local tooling
+docs/IDL-Applet-Normkonformitaet.md
+docs/tools/pdf2txt.py
 
 Thumbs.db
