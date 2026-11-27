@@ -12,6 +12,27 @@ public class CardFilesTests
     // EF.ATR/INFO of a production eMRTD (no personal data): card service data, card capabilities, 7F66 with 1520/1520.
     private const string ProductionAtrInfo = "43 01 F8 47 03 F7 41 E0 7F 66 08 02 02 05 F0 02 02 05 F0";
 
+    // EF.DIR of a German identity card (no personal data): CIA for eSign, eMRTD, eID, eSign.
+    private const string NpaEfDir =
+        "61 32 4F 0F E8 28 BD 08 0F A0 00 00 01 67 45 53 49 47 4E 50 0F 43 49 41 20 7A 75 20 44 46 2E 65 53 69 67 6E " +
+        "51 00 73 0C 4F 0A A0 00 00 01 67 45 53 49 47 4E 61 09 4F 07 A0 00 00 02 47 10 01 61 0B 4F 09 E8 07 04 00 7F " +
+        "00 07 03 02 61 0C 4F 0A A0 00 00 01 67 45 53 49 47 4E";
+
+    [Fact]
+    public void EfDirListsTheApplicationsOfAnIdentityCard()
+    {
+        var dir = new EfDirFile(Hex.Parse(NpaEfDir));
+        Assert.Empty(dir.Findings);
+        Assert.Equal(4, dir.Applications.Count);
+        Assert.True(dir.Lists(EmrtdReader.EmrtdAid));
+        Assert.DoesNotContain(dir.Applications, a => EfDirFile.IsLds2(a.Aid));
+        var text = dir.Describe();
+        Assert.Contains("(CIA, ISO/IEC 7816-15) \"CIA zu DF.eSign\"", text);
+        Assert.Contains("(eID, BSI TR-03110)", text);
+        Assert.Contains("(eSign)", text);
+        Assert.True(EfDirFile.IsLds2(Hex.Parse("A0 00 00 02 47 20 01")));
+    }
+
     [Fact]
     public void AtrInfoIsDecoded()
     {

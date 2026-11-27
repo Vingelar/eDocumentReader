@@ -148,12 +148,12 @@ public sealed partial class MainViewModel
             };
             ReadStage = T("PKI-Speicher laden", "Loading the PKI store");
             pki ??= await Task.Run(() => new PkiStore());
-            // Warm reset: afterwards the MF is the current DF (ISO/IEC 7816-4 7.1) and no SM session of an earlier
+            // Reset: afterwards the MF is the current DF (ISO/IEC 7816-4 7.1) and no SM session of an earlier
             // read is open, so EF.CardAccess is read first and without SELECT (ICAO 9303-11 4.2 step 1).
             var resetAnchor = LogSink.Count;
             var reset = await Task.Run(ResetCard);
             AddFinishedStep(new ReadStep(T("Reset der Karte", "Card reset"), reset == null ? StepOutcome.Success : StepOutcome.Warning,
-                reset == null ? T("Warm-Reset, MF ist aktuelles DF (ISO/IEC 7816-4 7.1)", "warm reset, MF is the current DF (ISO/IEC 7816-4 7.1)") : T($"Reset fehlgeschlagen ({reset}) – Lesen ohne Reset", $"reset failed ({reset}) – reading without reset")), resetAnchor);
+                reset == null ? (lastResetCold ? T("Kalt-Reset (HF-Feld aus), MF ist aktuelles DF (ISO/IEC 7816-4 7.1)", "cold reset (RF field off), MF is the current DF (ISO/IEC 7816-4 7.1)") : T("Warm-Reset, MF ist aktuelles DF (ISO/IEC 7816-4 7.1)", "warm reset, MF is the current DF (ISO/IEC 7816-4 7.1)")) : T($"Reset fehlgeschlagen ({reset}) – Lesen ohne Reset", $"reset failed ({reset}) – reading without reset")), resetAnchor);
             var options = new EmrtdReadOptions
             {
                 Key = key,
@@ -325,13 +325,20 @@ public sealed partial class MainViewModel
         return marked;
     }
 
-    /// <summary>Warm reset before reading: MF current, no open SM session. Returns null or the error message.</summary>
+    private bool lastResetCold;
+
+    /// <summary>
+    /// Reset before reading: MF current, no open SM session. Contactless: the RF field is switched off (SCARD_UNPOWER_CARD),
+    /// because a warm reset (SCARD_RESET_CARD) often leaves the field on and the chip keeps the SM session of the last
+    /// read (6982 on EF.CardAccess). Returns null or the error message.
+    /// </summary>
     private string? ResetCard()
     {
         try
         {
-            transport?.Reset(cold: false);
-            Logger.Info(LogCategory.Reader, T("Warm-Reset vor dem Lesen", "Warm reset before reading"), transport?.Atr);
+            lastResetCold = transport?.Interface == Core.Transport.CardInterface.Contactless;
+            transport?.Reset(cold: lastResetCold);
+            Logger.Info(LogCategory.Reader, lastResetCold ? T("Kalt-Reset vor dem Lesen (HF-Feld aus)", "Cold reset before reading (RF field off)") : T("Warm-Reset vor dem Lesen", "Warm reset before reading"), transport?.Atr);
             return null;
         }
         catch (Exception ex)

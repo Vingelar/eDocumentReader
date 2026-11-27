@@ -213,6 +213,13 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
             {
                 result.Dir = new EfDirFile(dirData);
                 foreach (var f in result.Dir.Findings) AddStep(result, new ReadStep(T($"Normkonformität {CardFiles.DirName}", $"Conformance {CardFiles.DirName}"), StepOutcome.Warning, f));
+                // Applications this reader does not read (eID, eSign, LDS2, ...): shown so the user sees what else is on the chip.
+                var others = result.Dir.Applications
+                    .Where(a => !a.Aid.AsSpan().SequenceEqual(EmrtdAid) && !a.Aid.AsSpan().SequenceEqual(IdlAid)).ToList();
+                if (others.Count > 0)
+                    AddStep(result, new ReadStep(T("Weitere Anwendungen (EF.DIR)", "Other applications (EF.DIR)"), StepOutcome.Success,
+                        T($"{others.Count} weitere Anwendung(en) auf dem Chip, nicht gelesen: ", $"{others.Count} other application(s) on the chip, not read: ")
+                        + string.Join("; ", others.Select(EfDirFile.Describe))) { Key = "otherApplications" });
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -255,6 +262,7 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
         PaceResult? pace = null;
         PaceInfo? chosen = null;
         var camVerified = false;
+        var camPerformed = false;
         string? paceFailure = null;
         var usePace = paceInfos.Count > 0 && (options.PreferPace || options.Key is AccessKey.CanKey);
         // PACE runs in the MF before the SELECT of the application; BAC/BAP after it (9303-11 4.2/4.3).
@@ -320,6 +328,7 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
                 // EF.CardSecurity is in the MF (SFI 1D, as EF.SOD in the application): read it before SELECT.
                 Report("EF.CardSecurity");
                 var step = VerifyChipAuthenticationMapping(pace, ReadFile(sm, Lds.SfiCardSecurity, "EF.CardSecurity", 0, result, ct));
+                camPerformed = true;
                 camVerified = step.Outcome is StepOutcome.Success or StepOutcome.Warning;
                 AddStep(result, step);
             }
@@ -385,10 +394,15 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
         // 4. Chip Authentication (DG14) unless PACE-CAM authenticated the chip, then Terminal Authentication (EF.CVCA +
         //    chain from the PKI store). After PACE-CAM, TA uses Comp(PK_DH,IFD) of PACE (ICAO 9303-11 7.1).
         byte[]? terminalKey = null;
-        if (camVerified)
+        if (camPerformed)
         {
+            // After PACE-CAM the chip authentication is part of PACE (9303-11 6.2 item 3); chips reject a further
+            // Chip Authentication with DG14 (6982). TA uses Comp(PK_DH,IFD) of PACE.
             terminalKey = pace!.CompressedTerminalEphemeralKey;
-            log.Info(LogCategory.Protocol, T("Chip Authentication mit DG14 entfällt: der Chip hat sich mit PACE-CAM authentisiert (ICAO 9303-11 4.4.3.3.3).", "Chip Authentication with DG14 not needed: the chip authenticated with PACE-CAM (ICAO 9303-11 4.4.3.3.3)."));
+            if (camVerified)
+                log.Info(LogCategory.Protocol, T("Chip Authentication mit DG14 entfällt: der Chip hat sich mit PACE-CAM authentisiert (ICAO 9303-11 4.4.3.3.3).", "Chip Authentication with DG14 not needed: the chip authenticated with PACE-CAM (ICAO 9303-11 4.4.3.3.3)."));
+            else if (options.ChipAuthentication)
+                AddStep(result, new ReadStep("Chip Authentication", StepOutcome.Skipped, T("nach PACE-CAM nicht mit DG14 ausführbar (der Chip lehnt sie ab, ICAO 9303-11 6.2); die Echtheit des Chips hängt an der PACE-CAM-Prüfung, und die ist nicht gelungen", "cannot be run with DG14 after PACE-CAM (the chip rejects it, ICAO 9303-11 6.2); the authenticity of the chip depends on the PACE-CAM check, which did not succeed")));
         }
         else if (!options.ChipAuthentication) AddStep(result, new ReadStep("Chip Authentication", StepOutcome.Skipped, T("abgewählt", "deselected")));
         else if (!result.DataGroups.TryGetValue(14, out var dg14)) AddStep(result, new ReadStep("Chip Authentication", StepOutcome.NotSupported, T("kein DG14", "no DG14")));
@@ -651,7 +665,16 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
             var cardSecurity = new CardSecurity(data);
             var info = cardSecurity.Infos.OfType<EfDirInfo>().FirstOrDefault();
             if (info == null)
-                return new ReadStep(name, StepOutcome.Failed, T("EF.CardSecurity enthält kein EFDIRInfo (ICAO 9303-11 9.2.11, 9303-10 3.11.2)", "EF.CardSecurity contains no EFDIRInfo (ICAO 9303-11 9.2.11, 9303-10 3.11.2)"));
+            {
+                // EFDIRInfo is mandatory with LDS2 applications (9303-11 4.2 step 2 note, 9303-10 3.11.2); 9.2.11 also lists
+                // it for chips with more than the eMRTD application. Older chips (e.g. TR-03110 eID cards) do not have it.
+                var apps = new EfDirFile(dir).Applications;
+                if (apps.Any(a => EfDirFile.IsLds2(a.Aid)))
+                    return new ReadStep(name, StepOutcome.Failed, T("EF.CardSecurity enthält kein EFDIRInfo, obwohl EF.DIR eine LDS2-Anwendung listet (ICAO 9303-11 4.2, 9.2.11)", "EF.CardSecurity contains no EFDIRInfo although EF.DIR lists an LDS2 application (ICAO 9303-11 4.2, 9.2.11)"));
+                return apps.Count > 1
+                    ? new ReadStep(name, StepOutcome.Warning, T($"nicht prüfbar: EF.CardSecurity enthält kein EFDIRInfo. Pflicht ist es nur bei LDS2-Anwendungen (ICAO 9303-11 4.2); EF.DIR listet {apps.Count} Anwendungen, keine davon LDS2. ICAO 9303-11 9.2.11 sieht EFDIRInfo vor, sobald mehr als die eMRTD-Anwendung vorhanden ist", $"cannot be verified: EF.CardSecurity contains no EFDIRInfo. It is mandatory only with LDS2 applications (ICAO 9303-11 4.2); EF.DIR lists {apps.Count} applications, none of them LDS2. ICAO 9303-11 9.2.11 expects EFDIRInfo when more than the eMRTD application is present"))
+                    : new ReadStep(name, StepOutcome.NotSupported, T("kein EFDIRInfo in EF.CardSecurity; nicht erforderlich, EF.DIR listet nur die eMRTD-Anwendung (ICAO 9303-11 4.2)", "no EFDIRInfo in EF.CardSecurity; not required, EF.DIR lists only the eMRTD application (ICAO 9303-11 4.2)"));
+            }
             if (!info.Content.AsSpan().SequenceEqual(dir))
                 return new ReadStep(name, StepOutcome.Failed, T($"EF.DIR ({dir.Length} Byte) ≠ EFDIRInfo ({info.Content.Length} Byte) – EF.DIR nicht authentisch", $"EF.DIR ({dir.Length} bytes) ≠ EFDIRInfo ({info.Content.Length} bytes) – EF.DIR not authentic"));
             var check = cardSecurity.Verify(pki);

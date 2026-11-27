@@ -188,11 +188,22 @@ public sealed class EfDirFile
     }
 
     public string Describe() => string.Join(Environment.NewLine,
-        Applications.Select(a => $"AID {Hex.Of(a.Aid)}{AidName(a.Aid)}{(a.Label != null ? $" \"{a.Label}\"" : "")}")
-            .Concat(Findings.Select(f => "⚠ " + f)));
+        Applications.Select(Describe).Concat(Findings.Select(f => "⚠ " + f)));
+
+    /// <summary>One application: AID, known name and application label '50'.</summary>
+    public static string Describe(Application a) => $"AID {Hex.Of(a.Aid)}{AidName(a.Aid)}{(a.Label != null ? $" \"{a.Label}\"" : "")}";
+
+    /// <summary>LDS2 applications (ICAO 9303-10): Travel Records, Visa Records, Additional Biometrics = A0 00 00 02 47 20 01..03.</summary>
+    public static bool IsLds2(ReadOnlySpan<byte> aid) => aid.Length == 7 && aid[..6].SequenceEqual(Lds2Prefix) && aid[6] is >= 1 and <= 3;
+
+    private static readonly byte[] Lds2Prefix = [0xA0, 0x00, 0x00, 0x02, 0x47, 0x20];
 
     private static string AidName(byte[] aid) =>
         aid.AsSpan().SequenceEqual(EmrtdReader.EmrtdAid) ? " (eMRTD, ICAO 9303-10)"
         : aid.AsSpan().SequenceEqual(EmrtdReader.IdlAid) ? " (IDL, ISO/IEC 18013-3)"
+        : IsLds2(aid) ? aid[6] switch { 1 => " (LDS2 Travel Records)", 2 => " (LDS2 Visa Records)", _ => " (LDS2 Additional Biometrics)" }
+        : Hex.Compact(aid) == "E80704007F00070302" ? " (eID, BSI TR-03110)"
+        : Hex.Compact(aid) == "A000000167455349474E" ? " (eSign)"
+        : Hex.Compact(aid).StartsWith("E828BD080F", StringComparison.Ordinal) ? " (CIA, ISO/IEC 7816-15)"
         : string.Empty;
 }
