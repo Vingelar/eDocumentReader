@@ -82,4 +82,14 @@ public class CardFilesTests
         var data = new FileReader(new CardChannel(transport, Logger.Null)).ReadWholeByFid(CardFiles.FidAtrInfo, CardFiles.AtrInfoName);
         Assert.Equal(Hex.Parse("43 01 F8 47 03 F7 41 E0"), data);
     }
+
+    [Fact]
+    public void PaceVariantsAreDescribedForTheChoice()
+    {
+        var gm = new PaceInfo(Oids.IdPaceEcdhGm + ".2", 2, 13, DerNull.Instance);
+        var cam = new PaceInfo(Oids.IdPaceEcdhCam + ".2", 2, 12, DerNull.Instance);
+        Assert.Contains("Generic Mapping, ECDH, AES-128", EmrtdReader.DescribePace(gm));
+        Assert.Contains("13 (", EmrtdReader.DescribePace(gm));
+        Assert.Contains("Chip Authentication Mapping, ECDH, AES-128", EmrtdReader.DescribePace(cam));
+    }
 }

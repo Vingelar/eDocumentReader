@@ -167,6 +167,13 @@ public sealed partial class MainViewModel
             {
                 Progress = p => dispatcher.BeginInvoke(() =>
                     ReadStage = p.File == null ? p.Stage : p.Total > 0 ? T($"{p.Stage} {p.File}: {p.Done} / {p.Total} Bytes", $"{p.Stage} {p.File}: {p.Done} / {p.Total} bytes") : $"{p.Stage} {p.File}"),
+                // Several PACE variants in EF.CardAccess: the user chooses, as in the Golden Reader (modal, UI thread).
+                ChoosePace = request =>
+                {
+                    var choice = dispatcher.Invoke(() => PaceChoiceWindow.Ask(System.Windows.Application.Current.MainWindow, request));
+                    if (choice.Cancelled) throw new OperationCanceledException();
+                    return choice.Info;
+                },
                 StepChanged = e =>
                 {
                     // Captured on the reading thread: the log entries of this step follow this index.

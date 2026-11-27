@@ -103,6 +103,15 @@ public sealed class AccessControlException(string message, StatusWord? status, E
 
 public sealed record EmrtdFile(string Name, byte Sfi, int DataGroup, byte[] Data, ushort? Fid = null);
 
+/// <summary>One PACEInfo of EF.CardAccess for the user's choice; <see cref="Supported"/>: this reader can run it.</summary>
+public sealed record PaceOption(PaceInfo Info, bool Supported, string Description);
+
+/// <summary>
+/// EF.CardAccess offers several PACE variants (ICAO 9303-11 9.2.1): the options in card order, the automatic choice,
+/// and whether BAC/BAP is possible instead (MRZ key, not CAN).
+/// </summary>
+public sealed record PaceChoiceRequest(IReadOnlyList<PaceOption> Options, PaceInfo Preselected, string? Fallback);
+
 public sealed class EmrtdReadResult
 {
     public List<EmrtdFile> Files { get; } = [];
@@ -268,10 +277,25 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
                 && (p.Algorithm.Mapping == PaceMapping.Generic || (p.Algorithm.Mapping == PaceMapping.ChipAuthentication && p.Algorithm.KeyType != Crypto.SessionKeyType.DesEde))).ToList();
             var cam = options.PreferChipAuthenticationMapping ? supported.FirstOrDefault(p => p.Algorithm.Mapping == PaceMapping.ChipAuthentication) : null;
             chosen = cam ?? supported.FirstOrDefault(p => p.Algorithm.Mapping == PaceMapping.Generic) ?? paceInfos[0];
+            var userChoice = false;
+            if (paceInfos.Count > 1 && ChoosePace != null)
+            {
+                // Several variants in EF.CardAccess (9303-11 9.2.1): the user picks one, or BAC/BAP with the MRZ.
+                var fallback = options.Key is AccessKey.MrzKey ? (options.IsIdl ? "BAP" : "BAC") : null;
+                var offered = paceInfos.Select(p => new PaceOption(p, supported.Contains(p), DescribePace(p))).ToList();
+                var picked = ChoosePace(new PaceChoiceRequest(offered, chosen, fallback));
+                userChoice = true;
+                if (picked == null && fallback == null) throw new OperationCanceledException();
+                log.Info(LogCategory.Protocol, picked == null
+                    ? T($"PACE-Auswahl: Benutzer wählt {fallback} statt PACE", $"PACE choice: the user chooses {fallback} instead of PACE")
+                    : T($"PACE-Auswahl: Benutzer wählt {DescribePace(picked)}", $"PACE choice: the user chooses {DescribePace(picked)}"), null, "ICAO 9303-11 9.2.1");
+                if (picked == null) AddStep(result, new ReadStep("PACE", StepOutcome.Skipped, T($"vom Benutzer abgewählt – {fallback}", $"deselected by the user – {fallback}")));
+                chosen = picked;
+            }
             try
             {
-                try { pace = Pace.Perform(channel, chosen, password, includeParameterId: paceInfos.Count > 1); }
-                catch (ProtocolException ex) when (cam != null && supported.FirstOrDefault(p => p.Algorithm.Mapping == PaceMapping.Generic) is { } gm)
+                if (chosen != null) try { pace = Pace.Perform(channel, chosen, password, includeParameterId: paceInfos.Count > 1); }
+                catch (ProtocolException ex) when (chosen.Algorithm.Mapping == PaceMapping.ChipAuthentication && !userChoice && supported.FirstOrDefault(p => p.Algorithm.Mapping == PaceMapping.Generic) is { } gm)
                 {
                     // A failed PACE-CAM run is repeated with generic mapping before any fallback to BAC (9303-11 4.2).
                     log.Warning(LogCategory.Protocol, T($"PACE-CAM fehlgeschlagen ({ex.Message}) – Wiederholung mit PACE-GM", $"PACE-CAM failed ({ex.Message}) – repeating with PACE-GM"));
@@ -440,6 +464,37 @@ public sealed class EmrtdReader(CardChannel channel, PkiStore pki)
     }
 
     private void Report(string stage, string? file = null, int done = 0, int total = 0) => Progress?.Invoke(new ReadProgress(stage, file, done, total));
+
+    /// <summary>
+    /// Several PACEInfos in EF.CardAccess: the user chooses the variant. Called on the reading thread; returns the chosen
+    /// PACEInfo, or null for BAC/BAP instead of PACE; throws <see cref="OperationCanceledException"/> to cancel.
+    /// Not set: automatic choice (CAM before GM, as <see cref="EmrtdReadOptions.PreferChipAuthenticationMapping"/>).
+    /// </summary>
+    public Func<PaceChoiceRequest, PaceInfo?>? ChoosePace { get; set; }
+
+    /// <summary>Text for one PACEInfo: OID name, mapping, key agreement, cipher and domain parameters (9303-11 Table 2/3, 12).</summary>
+    public static string DescribePace(PaceInfo p)
+    {
+        var a = p.Algorithm;
+        var mapping = a.Mapping switch
+        {
+            PaceMapping.Generic => "Generic Mapping",
+            PaceMapping.Integrated => "Integrated Mapping",
+            _ => "Chip Authentication Mapping",
+        };
+        var cipher = a.KeyType switch
+        {
+            Crypto.SessionKeyType.DesEde => "3DES",
+            Crypto.SessionKeyType.Aes128 => "AES-128",
+            Crypto.SessionKeyType.Aes192 => "AES-192",
+            _ => "AES-256",
+        };
+        var domain = p.ParameterId is { } id
+            ? (id <= 31 ? $"{id} ({StandardizedDomainParameters.Name(id)})" : T($"{id} (explizit)", $"{id} (explicit)"))
+            : T("explizit (PACEDomainParameterInfo)", "explicit (PACEDomainParameterInfo)");
+        return T($"{Oids.Name(p.Oid)} – {mapping}, {(a.KeyAgreement == KeyAgreement.Ecdh ? "ECDH" : "DH")}, {cipher}, Domain-Parameter {domain}",
+                 $"{Oids.Name(p.Oid)} – {mapping}, {(a.KeyAgreement == KeyAgreement.Ecdh ? "ECDH" : "DH")}, {cipher}, domain parameters {domain}");
+    }
 
     /// <summary>Live step view (see <see cref="StepEvent"/>); called on the reading thread.</summary>
     public Action<StepEvent>? StepChanged { get; set; }
