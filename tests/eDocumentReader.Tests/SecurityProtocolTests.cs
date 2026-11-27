@@ -2,6 +2,7 @@
 using eDocumentReader.Core.Pki;
 using eDocumentReader.Core.Protocols;
 using eDocumentReader.Core.Tlv;
+using eDocumentReader.Core.Util;
 using Org.BouncyCastle.Crypto.Parameters;
 using Org.BouncyCastle.Security;
 
@@ -12,6 +13,44 @@ public class SecurityProtocolTests
     private static readonly string Standards = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "docs", "standards"));
     private static string WorkedExample(string set, string file) => Path.Combine(Standards, "TR-03110_EAC-Worked-Example", "Certificates", set, file);
     private static string ReferenceData(string file) => Path.Combine(Standards, "TR-03105-5_ReferenceDataSet", "referenceDataSet", file);
+
+    /// <summary>EF.CardAccess of a German identity card (nPA): protocol information only, no personal data.</summary>
+    private const string NpaCardAccess =
+        "31820124300D060804007F00070202020201023012060A04007F000702020302020201020201483012060A04007F0007" +
+        "020203020202010302014F3012060A04007F0007020204020202010202010D3012060A04007F00070202040602020102" +
+        "02010D301B060B04007F000702020B010203300902010102010002010102014F301C060904007F000702020302300C06" +
+        "0704007F0007010202010D020148301C060904007F000702020302300C060704007F0007010202010D02014F302A0608" +
+        "04007F0007020206161E687474703A2F2F6273692E62756E642E64652F6369662F6E70612E786D6C303E060804007F00" +
+        "0702020831323012060A04007F00070202030202020102020149301C060904007F000702020302300C060704007F0007" +
+        "010202010D020149";
+
+    [Fact]
+    public void SecurityInfos_NpaCardAccess_ParsesAllEntries()
+    {
+        var infos = SecurityInfos.Parse(Hex.Parse(NpaCardAccess));
+        Assert.Empty(infos.OfType<InvalidSecurityInfo>());
+        Assert.Single(infos.OfType<TerminalAuthenticationInfo>());
+        var pace = infos.OfType<PaceInfo>().ToList();
+        Assert.Equal(2, pace.Count);
+        Assert.Contains(pace, p => p.Algorithm.Mapping == PaceMapping.Generic && p.ParameterId == 13);
+        Assert.Contains(pace, p => p.Algorithm.Mapping == PaceMapping.ChipAuthentication && p.ParameterId == 13);
+        Assert.Equal([0x48, 0x4F], infos.OfType<ChipAuthenticationInfo>().Select(i => i.KeyId ?? -1));
+        var caDomains = infos.OfType<ChipAuthenticationDomainParameterInfo>().ToList();
+        Assert.Equal([0x48, 0x4F], caDomains.Select(i => i.KeyId ?? -1));
+        Assert.All(caDomains, d => Assert.Equal(Oids.IdCaEcdh, d.Oid));
+        Assert.Contains(infos, i => i.Oid == Oids.IdCardInfo);
+        Assert.Contains(infos, i => i.Oid == Oids.IdPt);
+    }
+
+    [Fact]
+    public void SecurityInfos_MalformedEntry_DoesNotHideOthers()
+    {
+        // ChipAuthenticationInfo with a SEQUENCE instead of the version INTEGER, followed by a valid PACEInfo.
+        var infos = SecurityInfos.Parse(Hex.Parse(
+            "3124" + "300E060A04007F000702020302023000" + "3012060A04007F0007020204020202010202010D"));
+        Assert.Single(infos.OfType<InvalidSecurityInfo>());
+        Assert.Single(infos.OfType<PaceInfo>());
+    }
 
     [Theory]
     [InlineData("certs_ecdh")]

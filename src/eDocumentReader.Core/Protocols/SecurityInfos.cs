@@ -39,7 +39,19 @@ public sealed record ActiveAuthenticationInfo(string Oid, int Version, string Si
     public override string Description => T($"ActiveAuthenticationInfo, Signaturalgorithmus {Oids.Name(SignatureAlgorithm)}", $"ActiveAuthenticationInfo, signature algorithm {Oids.Name(SignatureAlgorithm)}");
 }
 
+/// <summary>ChipAuthenticationDomainParameterInfo (TR-03110-3 A.1.1.2): protocol id-CA-DH / id-CA-ECDH without cipher suffix.</summary>
+public sealed record ChipAuthenticationDomainParameterInfo(string Oid, Asn1Encodable DomainParameter, int? KeyId, Asn1Encodable Raw) : SecurityInfo(Oid, Raw)
+{
+    public override string Description => $"ChipAuthenticationDomainParameterInfo {Oids.Name(Oid)}{(KeyId is { } k ? $", KeyID {k}" : "")}";
+}
+
 public sealed record UnknownSecurityInfo(string Oid, Asn1Encodable Raw) : SecurityInfo(Oid, Raw);
+
+/// <summary>A SecurityInfo whose OID is known but whose content does not match the ASN.1 structure of the standard.</summary>
+public sealed record InvalidSecurityInfo(string Oid, string Error, Asn1Encodable Raw) : SecurityInfo(Oid, Raw)
+{
+    public override string Description => T($"{Oids.Name(Oid)}: ungültige Struktur ({Error})", $"{Oids.Name(Oid)}: invalid structure ({Error})");
+}
 
 /// <summary>EFDIRInfo (ICAO 9303-11 9.2.10): full copy of the content of EF.DIR in the MF.</summary>
 public sealed record EfDirInfo(string Oid, byte[] Content, Asn1Encodable Raw) : SecurityInfo(Oid, Raw)
@@ -79,7 +91,12 @@ public static class SecurityInfos
         {
             var seq = Asn1Sequence.GetInstance(element);
             var oid = DerObjectIdentifier.GetInstance(seq[0]).Id;
-            result.Add(ParseOne(oid, seq));
+            // One malformed or unexpected entry must not invalidate the others.
+            try { result.Add(ParseOne(oid, seq)); }
+            catch (Exception ex) when (ex is ArgumentException or InvalidCastException or ArithmeticException or IndexOutOfRangeException or NotSupportedException)
+            {
+                result.Add(new InvalidSecurityInfo(oid, ex.Message, seq));
+            }
         }
         return result;
     }
@@ -94,6 +111,8 @@ public static class SecurityInfos
             return new PaceDomainParameterInfo(oid, seq[1], OptInt(seq, 2), seq);
         if (oid.StartsWith(Oids.IdPkDh, StringComparison.Ordinal) || oid.StartsWith(Oids.IdPkEcdh, StringComparison.Ordinal))
             return new ChipAuthenticationPublicKeyInfo(oid, seq[1], OptInt(seq, 2), seq);
+        if (oid is Oids.IdCaDh or Oids.IdCaEcdh)
+            return new ChipAuthenticationDomainParameterInfo(oid, seq[1], OptInt(seq, 2), seq);
         if (oid.StartsWith(Oids.IdCa + ".", StringComparison.Ordinal))
             return new ChipAuthenticationInfo(oid, DerInteger.GetInstance(seq[1]).IntValueExact, OptInt(seq, 2), seq);
         if (oid == Oids.IdTa)
@@ -114,6 +133,8 @@ public static class Oids
     public const string IdPkEcdh = IdPk + ".2";
     public const string IdTa = BsiDe + ".2.2.2";
     public const string IdCa = BsiDe + ".2.2.3";
+    public const string IdCaDh = IdCa + ".1";
+    public const string IdCaEcdh = IdCa + ".2";
     public const string IdPace = BsiDe + ".2.2.4";
     public const string IdPaceDhGm = IdPace + ".1";
     public const string IdPaceEcdhGm = IdPace + ".2";
@@ -121,6 +142,10 @@ public static class Oids
     public const string IdPaceEcdhIm = IdPace + ".4";
     public const string IdPaceEcdhCam = IdPace + ".6";
     public const string IdRi = BsiDe + ".2.2.5";
+    public const string IdCardInfo = BsiDe + ".2.2.6";
+    public const string IdEidSecurity = BsiDe + ".2.2.7";
+    public const string IdPt = BsiDe + ".2.2.8";
+    public const string IdPs = BsiDe + ".2.2.11";
     public const string IdAa = "2.23.136.1.1.5";
     /// <summary>id-EFDIR = id-icao-mrtd-security 13 (ICAO 9303-11 9.2.10).</summary>
     public const string IdEfDir = "2.23.136.1.1.13";
@@ -139,9 +164,15 @@ public static class Oids
             var ka = rest[0] == "1" ? "DH" : "ECDH";
             return rest.Length == 2 && int.TryParse(rest[1], out var c) && c is >= 1 and <= 4 ? $"id-CA-{ka}-{Ciphers[c]}" : $"id-CA-{ka}";
         }
+        if (oid.StartsWith(IdPs + ".", StringComparison.Ordinal)) return $"id-PS ({oid[(IdPs.Length + 1)..]})";
+        if (oid.StartsWith(IdRi + ".", StringComparison.Ordinal)) return $"id-RI ({oid[(IdRi.Length + 1)..]})";
         return oid switch
         {
             IdTa => "id-TA",
+            IdRi => "id-RI",
+            IdCardInfo => "id-CI (CardInfoLocator)",
+            IdEidSecurity => "id-eIDSecurity",
+            IdPt => "id-PT (PrivilegedTerminalInfo)",
             IdAa => "id-AA",
             IdEfDir => "id-EFDIR",
             IdPkDh => "id-PK-DH",
