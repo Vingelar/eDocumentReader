@@ -54,6 +54,9 @@ public sealed partial class MainViewModel
     [ObservableProperty, NotifyCanExecuteChangedFor(nameof(SaveSelectedFileCommand))] private FileNode? selectedFileNode;
 
     public ObservableCollection<StepItem> ReadSteps { get; } = [];
+
+    /// <summary>A step started or finished: the result list scrolls to it, so the newest line stays visible.</summary>
+    public event Action<StepItem>? StepActivated;
     public ObservableCollection<MrzRow> MrzRows { get; } = [];
     public ObservableCollection<FileNode> FileNodes { get; } = [];
 
@@ -260,6 +263,7 @@ public sealed partial class MainViewModel
                 if (gone != null) ReadSteps.Remove(gone);
                 break;
         }
+        if (open != null && e.State is StepState.Running or StepState.Done) StepActivated?.Invoke(open);
         UpdateOverallProgress();
     }
 
@@ -417,18 +421,20 @@ public sealed partial class MainViewModel
             var f = mrz.Fields.FirstOrDefault(x => x.Key == key);
             return f == null ? "" : $"{f.CheckDigit} {(f.Valid switch { true => "✔", false => T("✘ falsch", "✘ wrong"), null => "–" })}";
         }
+        // Display without the filler '<' (ICAO 9303-3 4.2.2): trailing fillers removed, inner fillers shown as spaces.
+        static string Show(string field) => field.Replace('<', ' ').Trim();
         yield return new MrzRow("Format", mrz.Format.ToString(), "");
-        yield return new MrzRow(T("Dokumenttyp", "Document type"), mrz.DocumentCode.TrimEnd('<'), "");
-        yield return new MrzRow(T("Ausstellerstaat", "Issuing state"), mrz.IssuingState, "");
+        yield return new MrzRow(T("Dokumenttyp", "Document type"), Show(mrz.DocumentCode), "");
+        yield return new MrzRow(T("Ausstellerstaat", "Issuing state"), Show(mrz.IssuingState), "");
         yield return new MrzRow("Name", mrz.PrimaryIdentifier, "");
         yield return new MrzRow(T("Vornamen", "Given names"), mrz.SecondaryIdentifier, "");
-        yield return new MrzRow(T("Dokumentnummer", "Document number"), mrz.DocumentNumber.TrimEnd('<'), Check("documentNumber"));
-        yield return new MrzRow(T("Staatsangehörigkeit", "Nationality"), mrz.Nationality, "");
+        yield return new MrzRow(T("Dokumentnummer", "Document number"), Show(mrz.DocumentNumber), Check("documentNumber"));
+        yield return new MrzRow(T("Staatsangehörigkeit", "Nationality"), Show(mrz.Nationality), "");
         yield return new MrzRow(T("Geburtsdatum (JJMMTT)", "Date of birth (YYMMDD)"), mrz.DateOfBirth, Check("dateOfBirth"));
-        yield return new MrzRow(T("Geschlecht", "Sex"), mrz.Sex, "");
+        yield return new MrzRow(T("Geschlecht", "Sex"), mrz.Sex == "<" ? T("nicht angegeben (<)", "unspecified (<)") : mrz.Sex, "");
         yield return new MrzRow(T("Ablaufdatum (JJMMTT)", "Date of expiry (YYMMDD)"), mrz.DateOfExpiry, Check("dateOfExpiry"));
-        if (mrz.OptionalData1.Trim('<').Length > 0 || mrz.Format == MrzFormat.TD3) yield return new MrzRow(T("Optionale Daten", "Optional data"), mrz.OptionalData1, Check("personalNumber"));
-        if (mrz.OptionalData2.Trim('<').Length > 0) yield return new MrzRow(T("Optionale Daten 2", "Optional data 2"), mrz.OptionalData2, "");
+        if (mrz.OptionalData1.Trim('<').Length > 0 || mrz.Format == MrzFormat.TD3) yield return new MrzRow(T("Optionale Daten", "Optional data"), Show(mrz.OptionalData1), Check("personalNumber"));
+        if (mrz.OptionalData2.Trim('<').Length > 0) yield return new MrzRow(T("Optionale Daten 2", "Optional data 2"), Show(mrz.OptionalData2), "");
         yield return new MrzRow(T("Gesamtprüfziffer", "Composite check digit"), "", Check("composite"));
     }
 

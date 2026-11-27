@@ -144,7 +144,8 @@ public sealed class Mrz
 
     private void Check(string key, string name, string value, char checkDigit, bool allowFillerCheckDigit = false)
     {
-        bool? valid = allowFillerCheckDigit && checkDigit == '<' ? null : ComputeCheckDigit(value) == checkDigit;
+        // ICAO 9303-4, TD3 lower line position 43: with an unused personal number the check digit may be '0' or '<'.
+        bool? valid = (allowFillerCheckDigit && checkDigit == '<') || ComputeCheckDigit(value) == checkDigit;
         Fields.Add(new MrzField(name, value, checkDigit, valid, key));
         if (valid == false) Findings.Add(T($"Prüfziffer {name} falsch: '{checkDigit}', erwartet '{ComputeCheckDigit(value)}' (ICAO 9303-3 4.9).", $"Check digit {name} wrong: '{checkDigit}', expected '{ComputeCheckDigit(value)}' (ICAO 9303-3 4.9)."));
     }

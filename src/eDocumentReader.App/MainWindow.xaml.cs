@@ -21,6 +21,12 @@ public partial class MainWindow : Window
         Height = Math.Min(Height, SystemParameters.WorkArea.Height);
         DataContext = viewModel;
         HookLog();
+        // Result list: follow the step that is running or has just finished (planned steps further down stay below).
+        viewModel.StepActivated += ScrollStepIntoView;
+        viewModel.ReadSteps.CollectionChanged += (_, e) =>
+        {
+            if (e.Action == NotifyCollectionChangedAction.Add && e.NewItems?[0] is StepItem { State: not Core.Documents.StepState.Pending } item) ScrollStepIntoView(item);
+        };
         // The log view is rebuilt when a display level changes.
         viewModel.PropertyChanged += (_, e) =>
         {
@@ -45,6 +51,11 @@ public partial class MainWindow : Window
         if (e.Action != NotifyCollectionChangedAction.Add || (LogList.SelectedItem != null && !viewModel.IsReading)) return;
         ScrollLogToEnd();
     }
+
+    private void ScrollStepIntoView(StepItem item) => Dispatcher.BeginInvoke(DispatcherPriority.Background, () =>
+    {
+        if (StepList.Items.Contains(item)) StepList.ScrollIntoView(item);
+    });
 
     private void ScrollLogToEnd() => Dispatcher.BeginInvoke(DispatcherPriority.Background, () =>
     {

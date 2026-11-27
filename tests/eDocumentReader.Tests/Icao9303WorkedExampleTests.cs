@@ -34,6 +34,19 @@ public class Icao9303WorkedExampleTests
         Assert.Equal(expected, mrz.KeySeedInformation);
     }
 
+    [Theory]
+    [InlineData('<')]
+    [InlineData('0')]
+    public void Td3_UnusedPersonalNumber_FillerOrZeroCheckDigitIsValid(char checkDigit)
+    {
+        // ICAO 9303-4, TD3 lower line position 43: with an unused personal number the check digit may be '0' or '<'.
+        var line2 = "L898902C36UTO7408122F1204159<<<<<<<<<<<<<<" + checkDigit;
+        var composite = Mrz.ComputeCheckDigit(line2[..10] + line2[13..20] + line2[21..43]);
+        var mrz = Mrz.Parse("P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<\n" + line2 + composite);
+        Assert.True(mrz.Fields.Single(f => f.Key == "personalNumber").Valid);
+        Assert.All(mrz.Fields, f => Assert.True(f.Valid, f.Name));
+    }
+
     [Fact]
     public void D2_DocumentKeys()
     {

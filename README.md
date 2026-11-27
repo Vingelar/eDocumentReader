@@ -5,6 +5,8 @@
 Testsoftware zum Lesen und Prüfen elektronischer Dokumente über PC/SC-Leser (Windows, .NET 10, WPF).
 Oberfläche und Meldungen auf Deutsch oder Englisch (Menü *Einstellungen → Sprache*).
 
+![eDocumentReader: Testpass von Pierre de Fermat gelesen mit PACE, CA, AA und PA](docs/images/screenshot.png)
+
 ## Funktionen
 
 - **Reisepass / ID-Karte (eMRTD, ICAO Doc 9303):** BAC, PACE (MRZ oder CAN; GM und CAM mit Prüfung von EF.CardSecurity), Chip Authentication, Terminal Authentication,
@@ -58,6 +60,8 @@ verwenden (BSI TR-03110 Worked Example, BSI TR-03105-5 Referenzdatensatz).
 
 Test software for reading and checking electronic documents with PC/SC readers (Windows, .NET 10, WPF).
 User interface and messages in German or English (menu *Settings → Language*).
+
+![eDocumentReader: test passport of Pierre de Fermat read with PACE, CA, AA and PA](docs/images/screenshot.png)
 
 ## Features
 
