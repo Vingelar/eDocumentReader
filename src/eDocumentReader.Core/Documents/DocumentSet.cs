@@ -59,16 +59,26 @@ public static class DocumentSet
 {
     public const int SchemaVersion = 1;
 
-    /// <summary>Export name of an EF read by <see cref="EmrtdReader"/> (e.g. "EF.DG1" → "DG1"); null for EFs not part of the format (EF.CVCA).</summary>
+    /// <summary>Export name of an EF read by <see cref="EmrtdReader"/> (e.g. "EF.DG1" → "DG1"); null for EFs not part of the format.</summary>
     public static string? ExportName(EmrtdFile f) => f.DataGroup > 0 ? $"DG{f.DataGroup}" : f.Name switch
     {
         "EF.COM" or "EF.SOD" or "EF.CardAccess" or "EF.CardSecurity" => f.Name,
+        CardFiles.DirName or CardFiles.AtrInfoName or "EF.CVCA" => f.Name,
         _ when f.Name.StartsWith("EF.Registration_") || f.Name.StartsWith("EF.Signature_") || f.Name.StartsWith("EF.C.IA_") => f.Name,
         _ => null,
     };
 
     /// <summary>File name for a single exported EF (SET-FORMAT.md 2): <c>DG&lt;n&gt;.bin</c>, <c>EF.COM.bin</c> …</summary>
-    public static string SingleFileName(EmrtdFile f) => (ExportName(f) ?? f.Name) + ".bin";
+    public static string SingleFileName(EmrtdFile f) => FileName(ExportName(f) ?? f.Name);
+
+    /// <summary>File name of an EF in a set or as a single file; '/' (EF.ATR/INFO) becomes '_' → <c>EF.ATR_INFO.bin</c>.</summary>
+    public static string FileName(string name) => name.Replace('/', '_') + ".bin";
+
+    /// <summary>
+    /// EFs that hold a sequence of data objects instead of one outer TLV (EF.DIR: several '61' templates, EF.ATR/INFO:
+    /// '43', '47', '7F66' …, EF.CVCA: one or two '42' CARs plus '00' padding). They are exported byte-exact as read.
+    /// </summary>
+    public static bool IsDataObjectSequence(string name) => name is CardFiles.DirName or CardFiles.AtrInfoName or "EF.CVCA";
 
     /// <summary>
     /// FID of the EF. Files read by SFI carry no FID; the standard FID of the application is entered then
@@ -80,6 +90,10 @@ public static class DocumentSet
         return (type, name, dg) switch
         {
             (_, "EF.CardAccess", _) => "011C",
+            (_, CardFiles.DirName, _) => "2F00",
+            (_, CardFiles.AtrInfoName, _) => "2F01",
+            (SetDocumentType.Idl, "EF.CVCA", _) => "001C",
+            (_, "EF.CVCA", _) => "011C",
             (SetDocumentType.Idl, "EF.COM", _) => "001E",
             (SetDocumentType.Idl, "EF.SOD", _) => "001D",
             (SetDocumentType.Idl, _, { } n) => $"00{n:X2}",
@@ -97,6 +111,7 @@ public static class DocumentSet
     /// </summary>
     public static (byte[] Data, string? Note) TrimToTlv(string name, byte[] data, SecurityObject? sod, int dataGroup)
     {
+        if (IsDataObjectSequence(name)) return (data, null);
         int tlvLength;
         try { tlvLength = BerTlv.ParseSingle(data).TotalLength; }
         catch { return (data, T($"{name}: kein gültiges BER-TLV, Rohbytes unverändert übernommen", $"{name}: not a valid BER-TLV, raw bytes taken over unchanged")); }
@@ -121,7 +136,7 @@ public static class DocumentSet
         }
 
         // Order: EF.COM, DGs ascending, EF.SOD, then the MF files (SET-FORMAT.md 5.2).
-        int Rank(EmrtdFile f) => f.Name == "EF.COM" ? 0 : f.DataGroup > 0 ? f.DataGroup : f.Name == "EF.SOD" ? 100 : 200;
+        int Rank(EmrtdFile f) => f.Name == "EF.COM" ? 0 : f.DataGroup > 0 ? f.DataGroup : f.Name == "EF.SOD" ? 100 : f.Name == "EF.CVCA" ? 150 : 200;
         foreach (var f in result.Files.OrderBy(Rank))
         {
             if (ExportName(f) is not { } name) continue;
@@ -235,8 +250,8 @@ public static class DocumentSet
         var entries = new List<FileEntry>();
         foreach (var f in export.Files)
         {
-            var path = $"ef/{f.Name}.bin";
-            File.WriteAllBytes(Path.Combine(dir, "ef", f.Name + ".bin"), f.Data);
+            var path = $"ef/{FileName(f.Name)}";
+            File.WriteAllBytes(Path.Combine(dir, "ef", FileName(f.Name)), f.Data);
             entries.Add(new FileEntry(f.DataGroup, f.Name, path, f.FileId, f.Data.Length, Hex.Compact(SHA256.HashData(f.Data)).ToLowerInvariant()));
         }
         string? csca = null;

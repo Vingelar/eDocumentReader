@@ -14,7 +14,9 @@ public class DocumentSetTests
         var dg1 = BerTlv.EncodeConstructed(0x61, BerTlv.Encode(0x53, "TEST"u8.ToArray()));
         r.Files.Add(new EmrtdFile("EF.COM", Lds.SfiCom, 0, com));
         r.Files.Add(new EmrtdFile("EF.DG1", 1, 1, [.. dg1, 0x00, 0x00]));   // 2 bytes padding after the TLV
-        r.Files.Add(new EmrtdFile("EF.CVCA", 0x1C, 0, [0x42, 1, 0x41]));    // not part of the format
+        r.Files.Add(new EmrtdFile("EF.CVCA", 0x1C, 0, [0x42, 1, 0x41, 0x00, 0x00]));   // CAR + padding, exported as read
+        r.Files.Add(new EmrtdFile(CardFiles.DirName, 0x1E, 0, [0x61, 0x03, 0x4F, 0x01, 0x01, 0x61, 0x03, 0x4F, 0x01, 0x02], 0x2F00));
+        r.Files.Add(new EmrtdFile(CardFiles.AtrInfoName, 0x01, 0, [0x43, 0x01, 0xB8, 0x47, 0x03, 0x86, 0x01, 0xE0], 0x2F01));
         r.DataGroups[1] = r.Files[1].Data;
         r.DataGroupsListed.AddRange([1, 2]);
         r.Steps.Add(ReadStep.ReadFailed("EF.DG2", "EF.DG2: 6982 Sicherheitszustand nicht erfüllt"));
@@ -46,7 +48,16 @@ public class DocumentSetTests
             Assert.False(p.TryGetProperty("paChain", out _));
 
             var files = p.GetProperty("files").EnumerateArray().ToList();
-            Assert.Equal(["EF.COM", "DG1"], files.Select(f => f.GetProperty("name").GetString()));
+            Assert.Equal(["EF.COM", "DG1", "EF.CVCA", "EF.DIR", "EF.ATR/INFO"], files.Select(f => f.GetProperty("name").GetString()));
+            // Sequences of data objects are exported byte-exact, '/' is not used in the file name.
+            var atr = files[4];
+            Assert.Equal("ef/EF.ATR_INFO.bin", atr.GetProperty("path").GetString());
+            Assert.Equal("2F01", atr.GetProperty("fileId").GetString());
+            Assert.Equal(JsonValueKind.Null, atr.GetProperty("dataGroup").ValueKind);
+            Assert.Equal(8, File.ReadAllBytes(Path.Combine(dir, "ef", "EF.ATR_INFO.bin")).Length);
+            Assert.Equal(10, File.ReadAllBytes(Path.Combine(dir, "ef", "EF.DIR.bin")).Length);
+            Assert.Equal(5, File.ReadAllBytes(Path.Combine(dir, "ef", "EF.CVCA.bin")).Length);
+            Assert.Equal("001C", files[2].GetProperty("fileId").GetString());
             Assert.Equal(JsonValueKind.Null, files[0].GetProperty("dataGroup").ValueKind);   // present, null
             var dg1 = files[1];
             Assert.Equal(1, dg1.GetProperty("dataGroup").GetInt32());
@@ -65,6 +76,9 @@ public class DocumentSetTests
     [InlineData("EF.DG14", 14, "DG14.bin")]
     [InlineData("EF.SOD", 0, "EF.SOD.bin")]
     [InlineData("EF.CardAccess", 0, "EF.CardAccess.bin")]
+    [InlineData("EF.ATR/INFO", 0, "EF.ATR_INFO.bin")]
+    [InlineData("EF.DIR", 0, "EF.DIR.bin")]
+    [InlineData("EF.CVCA", 0, "EF.CVCA.bin")]
     public void SingleFileNames(string name, int dg, string expected) =>
         Assert.Equal(expected, DocumentSet.SingleFileName(new EmrtdFile(name, 0, dg, [])));
 
@@ -74,6 +88,9 @@ public class DocumentSetTests
     [InlineData(SetDocumentType.Idl, "DG4", 4, "0004")]
     [InlineData(SetDocumentType.Idl, "EF.SOD", null, "001D")]
     [InlineData(SetDocumentType.Idl, "EF.CardAccess", null, "011C")]
+    [InlineData(SetDocumentType.Icao, "EF.CVCA", null, "011C")]
+    [InlineData(SetDocumentType.Icao, "EF.DIR", null, "2F00")]
+    [InlineData(SetDocumentType.Icao, "EF.ATR/INFO", null, "2F01")]
     public void FileIds_FollowTheStandardTables(SetDocumentType type, string name, int? dg, string fid) =>
         Assert.Equal(fid, DocumentSet.FileId(type, name, dg, null));
 
